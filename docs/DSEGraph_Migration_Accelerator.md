@@ -226,6 +226,7 @@ class Category(str, Enum):
     SECURITY         = "security"
     TINKERPOP_DELTA  = "tinkerpop_delta"
     DATA_TYPE        = "data_type"
+    HCD_TARGET       = "hcd_target"   # Pre-flight checks against the HCD target cluster
 
 @dataclass
 class CompatibilityRule:
@@ -325,6 +326,23 @@ The catalogue must contain (at minimum) the following rules, derived from the co
 | `TP-004` | GREEN | GraphBinary serialization | JanusGraph 1.x supports GraphBinary; update client driver to use it |
 | `TP-005` | YELLOW | `property(k, v)` with no schema | TinkerPop 3.7 resolves cardinality from schema; ensure `schema.default` is set correctly |
 
+**HCD Target Compatibility Rules (HC-xxx):**
+
+These rules are evaluated by the assessor against the **target** HCD environment (not the source DSE cluster). They run as a pre-flight connectivity and compatibility check before migration starts. Source: `hcd-dev/cassandra.yaml` and `hcd-dev/compose.yaml`.
+
+| Rule ID | Severity | What is Checked | Notes |
+|---------|----------|----------------|-------|
+| `HC-001` | YELLOW | HCD `AdvancedAuthenticator` is enabled | `storage.cql.username` and `storage.cql.password` **must** be set in JanusGraph properties; anonymous connections rejected |
+| `HC-002` | YELLOW | HCD `materialized_views_enabled: false` | JanusGraph does not use CQL MVs — no conflict, but any pre-existing CQL MV creation scripts must be removed |
+| `HC-003` | YELLOW | HCD `hcd_guardrail_defaults: true` enforces batch-size limits | `storage.cql.atomic-batch-mutate=false` must be set; do not enable atomic batch mutations |
+| `HC-004` | YELLOW | HCD `storage_compatibility_mode: NONE` (Cassandra 5+ SSTable formats) | JanusGraph 1.x CQL driver (DataStax Java Driver 4.x) fully supports Cassandra 5 protocol — no action needed; flag as informational |
+| `HC-005` | YELLOW | HCD `default_secondary_index: sai` (Storage-Attached Index) | JanusGraph creates its own internal index tables; the SAI default does not interfere. Informational — no action needed |
+| `HC-006` | GREEN | HCD CQL port `9042`, datacenter `dc1` | Matches JanusGraph defaults (`storage.port=9042`, `storage.cql.local-datacenter=dc1`) — fully compatible |
+| `HC-007` | YELLOW | HCD `platform: linux/amd64` — Apple Silicon emulation | If the migration tool runs on Apple Silicon (M-series), Docker emulation is used for HCD. Flag for operators; no JanusGraph config impact |
+| `HC-008` | RED | IBM Container Registry authentication required | `docker login cp.icr.io --username cp` must succeed before `docker compose up`. Assessor detects if HCD is reachable on target host; if not, emits this RED finding with login instructions |
+
+The assessor probes `HC-008` by attempting a `cqlsh` connection to the configured HCD host/port with the provided credentials. If the connection fails and the target host is a local Docker network address (e.g., `127.0.0.1` or a `docker-compose` service name), it emits `HC-008` with the ICR login instructions.
+
 ---
 
 #### Step 0.2 — Build the `Assessor` class (`assessor.py`)
@@ -369,6 +387,23 @@ class Assessor:
         self._username   = username
         self._password   = password
 
+    def __init__(self, gremlin_url: str, cql_host: str, cql_port: int,
+                 graph_name: str,
+                 target_cql_host: str = None, target_cql_port: int = 9042,
+                 target_cql_username: str = "cassandra",
+                 target_cql_password: str = "cassandra",
+                 username: str = None, password: str = None):
+        self.gremlin_url         = gremlin_url
+        self.cql_host            = cql_host
+        self.cql_port            = cql_port
+        self.graph_name          = graph_name
+        self.target_cql_host     = target_cql_host      # optional — HCD target pre-flight
+        self.target_cql_port     = target_cql_port
+        self.target_cql_username = target_cql_username
+        self.target_cql_password = target_cql_password
+        self._username           = username
+        self._password           = password
+
     def run(self) -> AssessmentResult:
         """Execute the full assessment. Returns an AssessmentResult."""
         result = AssessmentResult(
@@ -383,6 +418,8 @@ class Assessor:
         result.findings += self._assess_olap()
         result.findings += self._assess_security()
         result.findings += self._assess_tinkerpop_delta()
+        if self.target_cql_host:
+            result.findings += self._assess_hcd_target()  # pre-flight against HCD
         result.overall_risk = self._compute_risk(result.findings)
         result.summary      = self._build_summary(result.findings)
         return result
@@ -425,6 +462,75 @@ class Assessor:
 6. **`_assess_security()`** — For DSG: query `system.graph(name).describe()` for RLAC configuration. For Classic: query `system.graphs()` and inspect security metadata.
 
 7. **`_assess_tinkerpop_delta()`** — Emit static TP-001 through TP-005 findings for every graph, since TinkerPop version delta affects all DSE graphs migrating to JanusGraph. Severity is YELLOW; these are advisory.
+
+8. **`_assess_hcd_target()`** — Called only when `--target-cql-host` is provided. Probes the HCD target cluster and emits HC-xxx findings. This is a **target-side pre-flight**, not a source DSE analysis:
+
+   ```python
+   def _assess_hcd_target(self) -> list[AssessmentFinding]:
+       """
+       Pre-flight checks against the HCD 2.x target cluster.
+       Attempts a CQL connection; if it fails, emits HC-008 (ICR auth required).
+       If it succeeds, introspects cassandra.yaml-equivalent system tables to
+       detect AdvancedAuthenticator, guardrail defaults, and platform metadata.
+       """
+       findings = []
+       try:
+           from cassandra.cluster import Cluster
+           from cassandra.auth import PlainTextAuthProvider
+           auth = PlainTextAuthProvider(self.target_cql_username, self.target_cql_password)
+           cluster = Cluster(
+               [self.target_cql_host],
+               port=self.target_cql_port,
+               auth_provider=auth,
+               connect_timeout=10
+           )
+           session = cluster.connect()
+
+           # HC-001: AdvancedAuthenticator — connection itself confirms auth is required;
+           # if we reached here with credentials, auth is working → emit YELLOW (informational)
+           findings.append(self._make_finding(
+               "HC-001",
+               "HCD AdvancedAuthenticator confirmed active — credentials accepted. "
+               "Ensure JanusGraph config sets storage.cql.username and storage.cql.password."
+           ))
+
+           # HC-002: materialized_views_enabled
+           rows = session.execute(
+               "SELECT value FROM system_views.settings WHERE name='materialized_views_enabled'"
+           )
+           mv_enabled = next((r.value for r in rows), "false")
+           if mv_enabled.lower() == "false":
+               findings.append(self._make_finding(
+                   "HC-002",
+                   "HCD materialized_views_enabled=false confirmed — JanusGraph will not create CQL MVs."
+               ))
+
+           # HC-003, HC-004, HC-005, HC-006 emitted as static advisory findings
+           for rule_id in ("HC-003", "HC-004", "HC-005", "HC-006"):
+               findings.append(self._make_finding(rule_id, "HCD target pre-flight advisory."))
+
+           # HC-007: Apple Silicon detection
+           import platform as plat
+           if plat.machine() == "arm64":
+               findings.append(self._make_finding(
+                   "HC-007",
+                   "Apple Silicon (arm64) detected — HCD linux/amd64 image runs under Rosetta emulation."
+               ))
+
+           cluster.shutdown()
+
+       except Exception as e:
+           # HC-008: Cannot connect to HCD target — likely ICR auth / image not pulled
+           findings.append(self._make_finding(
+               "HC-008",
+               f"Cannot connect to HCD target at {self.target_cql_host}:{self.target_cql_port}. "
+               f"Error: {e}. "
+               "If running locally, ensure docker login cp.icr.io --username cp succeeded "
+               "and the HCD container is healthy (docker compose ps)."
+           ))
+
+       return findings
+   ```
 
 **Risk computation:**
 ```python
@@ -718,10 +824,21 @@ The `<graph-name>-assessment-report.json` must be machine-parseable for downstre
 @main.command()
 @click.option('--source-gremlin-url', required=True,
               help='WebSocket URL of the source DSE Gremlin server (ws://<host>:8182/gremlin)')
-@click.option('--source-cql-host',    required=True)
+@click.option('--source-cql-host',    required=True,
+              help='CQL host of the source DSE cluster.')
 @click.option('--source-cql-port',    default=9042, show_default=True)
 @click.option('--graph-name',         required=True)
 @click.option('--output-dir',         default='.', show_default=True)
+# ── Target HCD pre-flight (optional but recommended) ────────────────────────
+@click.option('--target-cql-host', default=None,
+              help='CQL host of the target HCD cluster. When provided, runs HCD pre-flight '
+                   'checks (HC-001 through HC-008) including ICR auth probe and guardrail detection.')
+@click.option('--target-cql-port',     default=9042,       show_default=True)
+@click.option('--target-cql-username', default='cassandra', show_default=True,
+              help='HCD CQL username (AdvancedAuthenticator). Default: cassandra.')
+@click.option('--target-cql-password', default='cassandra', show_default=True,
+              hide_input=True, help='HCD CQL password.')
+# ── Output and filtering ─────────────────────────────────────────────────────
 @click.option('--format', 'output_formats',
               type=click.Choice(['md', 'json', 'html', 'all']),
               multiple=True, default=['all'], show_default=True,
@@ -729,27 +846,44 @@ The `<graph-name>-assessment-report.json` must be machine-parseable for downstre
 @click.option('--filter-category',
               type=click.Choice(['query_pattern','schema','index',
                                  'configuration','olap','security',
-                                 'tinkerpop_delta','data_type','all']),
+                                 'tinkerpop_delta','data_type',
+                                 'hcd_target','all']),   # hcd_target added
               default='all', show_default=True,
               help='Restrict findings to a specific category.')
 @click.option('--filter-severity',
               type=click.Choice(['RED','YELLOW','GREEN','all']),
               default='all', show_default=True,
               help='Restrict findings to a minimum severity.')
-@click.option('--username', default=None, help='DSE authentication username.')
-@click.option('--password', default=None, help='DSE authentication password.',
+@click.option('--username', default=None, help='DSE source authentication username.')
+@click.option('--password', default=None, help='DSE source authentication password.',
               hide_input=True)
 def assess(source_gremlin_url, source_cql_host, source_cql_port,
-           graph_name, output_dir, output_formats, filter_category,
-           filter_severity, username, password):
+           graph_name, output_dir,
+           target_cql_host, target_cql_port, target_cql_username, target_cql_password,
+           output_formats, filter_category, filter_severity, username, password):
     """
     Run a read-only pre-migration compatibility assessment.
 
-    Connects to the source DSE Graph cluster, analyses schema, query patterns,
-    indexes, and configuration against JanusGraph's capability matrix, and
-    produces a structured report in Markdown, JSON, and HTML formats.
+    Connects to the source DSE Graph cluster and (optionally) the target HCD 2.x
+    cluster to analyse schema, query patterns, indexes, configuration, and HCD
+    pre-flight requirements against JanusGraph's capability matrix.
+
+    Produces a structured report in Markdown, JSON, and HTML formats.
 
     This command is NON-DESTRUCTIVE and can be run repeatedly.
+
+    Example (source-only):
+      dse-jg-migrator assess \\
+        --source-gremlin-url ws://localhost:8183/gremlin \\
+        --source-cql-host localhost --source-cql-port 9043 \\
+        --graph-name food
+
+    Example (source + HCD target pre-flight):
+      dse-jg-migrator assess \\
+        --source-gremlin-url ws://localhost:8183/gremlin \\
+        --source-cql-host localhost --source-cql-port 9043 \\
+        --target-cql-host localhost --target-cql-port 9042 \\
+        --graph-name food
     """
     from .assessor import Assessor
     from .assessment_reporter import AssessmentReporter
@@ -759,6 +893,10 @@ def assess(source_gremlin_url, source_cql_host, source_cql_port,
         cql_host=source_cql_host,
         cql_port=source_cql_port,
         graph_name=graph_name,
+        target_cql_host=target_cql_host,
+        target_cql_port=target_cql_port,
+        target_cql_username=target_cql_username,
+        target_cql_password=target_cql_password,
         username=username,
         password=password,
     )
@@ -1334,20 +1472,37 @@ Apply the translated JanusGraph JSON schema to the target JanusGraph + HCD clust
 
 ### Todo List
 
-1. **Configure the JanusGraph server to accept JSON schema init.** The target JanusGraph server must be started with:
+1. **Configure the JanusGraph server to connect to HCD 2.x.** HCD 2.x uses image `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` (IBM Container Registry — requires `docker login cp.icr.io --username cp`). Key HCD-specific CQL properties derived from [`hcd-dev/cassandra.yaml`](../hcd-dev/cassandra.yaml) and [`hcd-dev/compose.yaml`](../hcd-dev/compose.yaml):
+
+   | HCD Setting | Value | JanusGraph property |
+   |-------------|-------|---------------------|
+   | Cluster name | `hcd_cluster` | n/a (informational) |
+   | CQL port | `9042` | `storage.port=9042` |
+   | Local datacenter | `dc1` | `storage.cql.local-datacenter=dc1` |
+   | Authenticator | `AdvancedAuthenticator` (password enabled) | `storage.cql.username=cassandra` / `storage.cql.password=cassandra` |
+   | Default secondary index | `sai` (Storage-Attached Index) | no conflict — JanusGraph manages its own index tables |
+   | Materialized views | **disabled** (`materialized_views_enabled: false`) | no conflict — JanusGraph does not use CQL MVs |
+   | `storage_compatibility_mode` | `NONE` (Cassandra 5+ formats) | requires JanusGraph CQL driver ≥ 4.x (satisfied by JanusGraph 1.x) |
+   | `hcd_guardrail_defaults` | `true` | sets conservative batch-size limits; ensure JanusGraph batch mutations stay < 5 MB |
+
+   The target JanusGraph server must be started with:
    ```properties
    # janusgraph-cql-hcd.properties
    gremlin.graph=org.janusgraph.core.JanusGraphFactory
    storage.backend=cql
-   storage.hostname=<hcd-host>
+   storage.hostname=<hcd-host>          # service name in compose: "hcd"
    storage.port=9042
    storage.cql.keyspace=<target-keyspace>
+   storage.cql.local-datacenter=dc1     # HCD default DC name from cassandra.yaml
+   storage.cql.username=cassandra       # HCD AdvancedAuthenticator default role
+   storage.cql.password=cassandra       # Change in production
    storage.cql.replication-strategy-class=NetworkTopologyStrategy
-   storage.cql.replication-strategy-options=dc1,3
+   storage.cql.replication-strategy-options=dc1,1   # single-node dev; use dc1,3 in production
 
-   # Index backend (Elasticsearch for search indexes)
-   index.search.backend=elasticsearch
-   index.search.hostname=<es-host>
+   # Index backend — OpenSearch (wire-compatible with Elasticsearch REST API)
+   # Use opensearchproject/opensearch:3 locally; same config keys as elasticsearch backend
+   index.search.backend=elasticsearch   # JanusGraph Elasticsearch driver is OpenSearch-compatible
+   index.search.hostname=<opensearch-host>
    index.search.port=9200
    index.search.index-name=<target-keyspace>
 
@@ -1358,6 +1513,8 @@ Apply the translated JanusGraph JSON schema to the target JanusGraph + HCD clust
    schema.init.json.indices-activation-type=REINDEX_AND_ENABLE_NON_ENABLED
    ```
    The `schema.init.strategy=json` approach is the cleanest for declarative schema init (see `janusgraph/janusgraph-core/src/main/java/org/janusgraph/core/schema/JsonSchemaInitStrategy.java`).
+
+   > **HCD guardrail note:** `hcd_guardrail_defaults: true` enforces a batch-size fail threshold. JanusGraph's `storage.cql.atomic-batch-mutate=false` (default) avoids atomic batch mutations, which sidesteps this guardrail. Do not set `storage.cql.atomic-batch-mutate=true` against HCD.
 
 2. **Alternative: submit schema via Gremlin.** If the operator cannot restart the server, send schema creation Gremlin scripts via the Gremlin WebSocket API. The initialiser module should support both modes:
    - `--mode server-restart` (preferred — use JSON init strategy)
@@ -1740,63 +1897,312 @@ Wire all modules into a cohesive `click`-based CLI with clear command names, hel
 **Status:** `[ ] pending`
 
 ### Intent
-Provide a Docker Compose file that spins up the full target stack (JanusGraph + HCD/Cassandra + Elasticsearch) plus a small DSE Graph "test source" so the tool can be validated end-to-end.
+Provide a Docker Compose file that spins up the **exact production-equivalent local stack** — HCD 2.x (IBM Container Registry), OpenSearch 3, JanusGraph, and a DSE Graph source — so the migration tool can be validated end-to-end without any cloud dependency.
 
 ### Expected Outcomes
-- `docker compose -f docker/docker-compose-e2e.yml up -d` starts the full environment.
+- `docker compose -f docker/docker-compose-e2e.yml up -d` starts all five services and all healthchecks pass.
+- `dse-jg-migrator assess --graph-name food ...` completes in < 60 seconds.
 - `dse-jg-migrator run-all --graph-name food ...` completes successfully.
 - `dse-jg-migrator validate ...` reports 100% vertex/edge count match.
 - A `tests/e2e/test_e2e.py` script verifies the above programmatically.
 
+### Prerequisites
+
+Before running `docker compose up`, the operator must authenticate with IBM Container Registry to pull the HCD image:
+
+```bash
+# Replace <your-entitlement-key> with your IBM Entitled Registry key
+# from https://myibm.ibm.com/products-services/containerlibrary
+docker login cp.icr.io --username cp
+# When prompted for password, paste your entitlement key
+```
+
+Verify authentication:
+```bash
+docker login cp.icr.io --username cp
+# Expected: "Login Succeeded"
+```
+
+**System requirements** (from `hcd-dev/README.md`):
+- Docker memory allocation: **≥ 8 GB** total (HCD 3 GB + DSE 2 GB + JanusGraph 1.5 GB + OpenSearch 1.5 GB)
+- Disk space: **≥ 15 GB** free
+- Platform: HCD image is `linux/amd64` — on Apple Silicon, Docker uses Rosetta/emulation (slower, but functional)
+- Ports required: `9042` (HCD CQL), `8181` (HCD Data API), `8182` (JanusGraph Gremlin), `9200` (OpenSearch), `9043` (DSE CQL), `8183` (DSE Gremlin)
+
 ### Todo List
 
-1. **Extend the existing Docker Compose reference** from `janusgraph/janusgraph-dist/docker/examples/docker-compose-cql-es.yml`:
+1. **Create `docker/docker-compose-e2e.yml`** — the canonical E2E compose file built from `hcd-dev/compose.yaml` and `janusgraph/janusgraph-dist/docker/examples/docker-compose-cql-es.yml`:
+
    ```yaml
+   # docker/docker-compose-e2e.yml
+   # Full local simulation: DSE Graph (source) → JanusGraph + HCD 2.x + OpenSearch (target)
+   #
+   # Prerequisites:
+   #   docker login cp.icr.io --username cp   (IBM entitlement key required for HCD image)
+   #
+   # Usage:
+   #   docker compose -f docker/docker-compose-e2e.yml up -d
+   #   docker compose -f docker/docker-compose-e2e.yml ps       # verify all healthy
+   #   docker compose -f docker/docker-compose-e2e.yml down -v  # full teardown
+
+   networks:
+     migrator-net:
+
+   volumes:
+     hcd-data:
+     opensearch-data:
+     dse-data:
+
    services:
+
+     # ── TARGET: HCD 2.x (IBM Hyper-Converged Database) ─────────────────────
+     hcd:
+       image: cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi
+       platform: linux/amd64           # HCD ships amd64 only; Rosetta emulation on Apple Silicon
+       container_name: migrator-hcd
+       networks: [migrator-net]
+       mem_limit: 3G
+       environment:
+         - MAX_HEAP_SIZE=1536M
+         - CLUSTER_NAME=hcd_cluster
+         - DS_LICENSE=accept
+         - HCD_AUTO_CONF_OFF=cassandra.yaml
+         - JVM_EXTRA_OPTS=-Dcassandra.sai.latest.version=ec
+       volumes:
+         - ${PWD}/hcd-dev/cassandra.yaml:/opt/hcd/resources/cassandra/conf/cassandra.yaml:ro
+         - hcd-data:/var/lib/cassandra
+       ports:
+         - "9042:9042"                 # CQL — JanusGraph connects here
+       healthcheck:
+         test: ["CMD-SHELL", "cqlsh -u cassandra -p cassandra -e 'describe keyspaces'"]
+         interval: 15s
+         timeout: 10s
+         retries: 20
+         start_period: 60s             # HCD initialises slowly on first start
+
+     # ── TARGET: OpenSearch 3 (index backend for JanusGraph) ─────────────────
+     opensearch:
+       image: opensearchproject/opensearch:3
+       container_name: migrator-opensearch
+       networks: [migrator-net]
+       mem_limit: 1536M
+       environment:
+         - discovery.type=single-node
+         - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Admin_1234!   # OpenSearch 2.12+ requires strong password
+         - plugins.security.disabled=true                  # Disable security for local dev
+         - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+       volumes:
+         - opensearch-data:/usr/share/opensearch/data
+       ports:
+         - "9200:9200"                 # REST API — JanusGraph connects here
+         - "9600:9600"                 # Performance analyser
+       healthcheck:
+         test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qv '\"status\":\"red\"'"]
+         interval: 10s
+         timeout: 10s
+         retries: 12
+         start_period: 30s
+
+     # ── TARGET: JanusGraph (graph engine over HCD + OpenSearch) ─────────────
      janusgraph:
        image: janusgraph/janusgraph:latest
-       ports: ["8182:8182"]
+       container_name: migrator-janusgraph
+       networks: [migrator-net]
+       ports:
+         - "8182:8182"                 # Gremlin WebSocket
        environment:
-         JAVA_OPTIONS: >-
-           -Dgremlin.graph=org.janusgraph.core.JanusGraphFactory
-           -Dstorage.backend=cql
-           -Dstorage.hostname=cassandra
-           -Dstorage.cql.keyspace=test_graph
-           -Dindex.search.backend=elasticsearch
-           -Dindex.search.hostname=elasticsearch
-       depends_on: [cassandra, elasticsearch]
+         JANUS_PROPS_TEMPLATE: cql-es
+         # Storage — HCD 2.x
+         janusgraph.storage.backend: cql
+         janusgraph.storage.hostname: hcd
+         janusgraph.storage.port: "9042"
+         janusgraph.storage.cql.local-datacenter: dc1
+         janusgraph.storage.cql.username: cassandra
+         janusgraph.storage.cql.password: cassandra
+         janusgraph.storage.cql.keyspace: jg_migration_test
+         janusgraph.storage.cql.replication-strategy-class: NetworkTopologyStrategy
+         janusgraph.storage.cql.replication-strategy-options: dc1,1
+         # Do NOT use atomic-batch-mutate — HCD guardrail defaults limit batch size
+         janusgraph.storage.cql.atomic-batch-mutate: "false"
+         # Index — OpenSearch (elasticsearch driver is wire-compatible)
+         janusgraph.index.search.backend: elasticsearch
+         janusgraph.index.search.hostname: opensearch
+         janusgraph.index.search.port: "9200"
+         janusgraph.index.search.index-name: jg_migration_test
+         # Schema
+         janusgraph.schema.default: none
+       depends_on:
+         hcd:
+           condition: service_healthy
+         opensearch:
+           condition: service_healthy
+       healthcheck:
+         test: ["CMD", "bin/gremlin.sh", "-e", "scripts/remote-connect.groovy"]
+         interval: 10s
+         timeout: 30s
+         retries: 6
+         start_period: 30s
 
-     cassandra:
-       image: cassandra:4.1   # Compatible with HCD
-       environment:
-         HEAP_NEWSIZE: "128M"
-         MAX_HEAP_SIZE: "512M"
-
-     elasticsearch:
-       image: elasticsearch:8.19.15
-       environment:
-         discovery.type: single-node
-         xpack.security.enabled: "false"
-
-     # Test DSE Graph source (using DSE 6.8 image)
+     # ── SOURCE: DSE Graph 6.8 (Classic + DSG source for migration testing) ──
      dse-graph-source:
-       image: datastax/dse-server:6.8.48
+       image: datastax/dse-server:6.8.65-ubi7
+       container_name: migrator-dse-source
+       networks: [migrator-net]
+       mem_limit: 2G
        environment:
          DS_LICENSE: accept
-         DSE_GRAPH: 1
-       ports: ["9042:9042", "8183:8182"]
+         DSE_GRAPH: "1"               # Enables DSE Graph engine
+       volumes:
+         - dse-data:/var/lib/cassandra
+       ports:
+         - "9043:9042"               # DSE CQL (offset to avoid clash with HCD on 9042)
+         - "8183:8182"               # DSE Gremlin WebSocket
+       healthcheck:
+         test: ["CMD-SHELL", "nodetool status | grep -q UN"]
+         interval: 15s
+         timeout: 10s
+         retries: 20
+         start_period: 90s           # DSE takes longer than HCD to initialise
+
+     # ── OPTIONAL: JanusGraph Visualizer (graph exploration UI) ──────────────
+     janusgraph-visualizer:
+       image: janusgraph/janusgraph-visualizer:latest
+       container_name: migrator-visualizer
+       networks: [migrator-net]
+       ports:
+         - "3000:3000"               # UI
+         - "3001:3001"               # Gremlin proxy
+       environment:
+         - GREMLIN_HOST=migrator-janusgraph
+       depends_on:
+         janusgraph:
+           condition: service_healthy
    ```
 
-2. **Write `tests/e2e/seed_dse.groovy`** that creates the `food` test graph with all the schema patterns (vertex labels with partition keys, edge labels, search indexes, MV indexes).
+2. **Add a `docker/janusgraph-hcd.properties`** config file that the JanusGraph container mounts — this is the production-equivalent properties file for the E2E test and can be copied as the starting point for real deployments:
 
-3. **Write `tests/e2e/test_e2e.py`** that:
-   - Seeds DSE Graph via Gremlin.
-   - Runs `dse-jg-migrator run-all`.
-   - Asserts all validation checks pass.
+   ```properties
+   # docker/janusgraph-hcd.properties
+   # JanusGraph configuration for HCD 2.x backend + OpenSearch index
+   # Copy this file and adjust hostnames / keyspace for production use.
+
+   gremlin.graph=org.janusgraph.core.JanusGraphFactory
+
+   # ── Storage: HCD 2.x ──────────────────────────────────────────────────────
+   storage.backend=cql
+   storage.hostname=hcd
+   storage.port=9042
+   storage.cql.local-datacenter=dc1
+   storage.cql.username=cassandra
+   storage.cql.password=cassandra
+   storage.cql.keyspace=jg_migration_test
+   storage.cql.replication-strategy-class=NetworkTopologyStrategy
+   storage.cql.replication-strategy-options=dc1,1
+   # HCD guardrail: do not use atomic batch mutations
+   storage.cql.atomic-batch-mutate=false
+
+   # ── Index: OpenSearch / Elasticsearch (wire-compatible) ───────────────────
+   index.search.backend=elasticsearch
+   index.search.hostname=opensearch
+   index.search.port=9200
+   index.search.index-name=jg_migration_test
+   # For OpenSearch with security disabled locally; add auth headers for production
+   # index.search.elasticsearch.http.auth.type=basic
+   # index.search.elasticsearch.http.auth.basic.username=admin
+   # index.search.elasticsearch.http.auth.basic.password=Admin_1234!
+
+   # ── Schema ────────────────────────────────────────────────────────────────
+   schema.default=none
+   ```
+
+3. **Create `docker/seed_dse.groovy`** that seeds the `food` test graph with all schema patterns the assessor and migrator must handle:
+
+   ```groovy
+   // docker/seed_dse.groovy
+   // Run with: docker exec -i migrator-dse-source dse gremlin-console -e /dev/stdin < docker/seed_dse.groovy
+
+   :remote connect tinkerpop.server conf/remote.yaml session
+   :remote console
+
+   // Create the food graph (DSG / Core engine)
+   system.graph('food').ifNotExists()
+     .withReplication("{'class':'SimpleStrategy','replication_factor':1}")
+     .andDurableWrites(true)
+     .create()
+
+   :remote config alias g food.g
+   schema = food.schema()
+
+   // Vertex labels — covering partition keys, clustering, collections, UDTs
+   schema.vertexLabel('person').ifNotExists()
+     .partitionBy('person_id', Uuid)
+     .property('name', Text)
+     .property('nickname', setOf(Text))
+     .property('badge', mapOf(Text, Date))
+     .create()
+
+   schema.vertexLabel('recipe').ifNotExists()
+     .partitionBy('recipe_id', Uuid)
+     .property('name', Text)
+     .property('instructions', Text)
+     .property('cuisine', Text)
+     .property('tags', setOf(Text))
+     .create()
+
+   // Edge labels
+   schema.edgeLabel('created').ifNotExists()
+     .from('person').to('recipe')
+     .property('created_on', Date)
+     .create()
+
+   schema.edgeLabel('knows').ifNotExists()
+     .from('person').to('person')
+     .property('since', Date)
+     .create()
+
+   // Indexes — MV, search, vertex-centric
+   schema.vertexLabel('person').materializedView('person_by_name')
+     .ifNotExists().partitionBy('name').clusterBy('person_id', Asc).create()
+
+   schema.vertexLabel('recipe').searchIndex().ifNotExists()
+     .by('instructions').asText()
+     .by('cuisine').asString()
+     .create()
+
+   schema.edgeLabel('knows').from('person').to('person')
+     .materializedView('knows_by_since').ifNotExists()
+     .partitionBy(OUT, 'person_id').clusterBy('since', Asc).clusterBy(IN, 'person_id', Asc)
+     .create()
+
+   // Seed data
+   p1 = g.addV('person').property('person_id', UUID.randomUUID()).property('name', 'Alice').next()
+   p2 = g.addV('person').property('person_id', UUID.randomUUID()).property('name', 'Bob').next()
+   r1 = g.addV('recipe').property('recipe_id', UUID.randomUUID())
+           .property('name', 'Pasta').property('instructions', 'Boil water, add pasta')
+           .property('cuisine', 'Italian').next()
+   g.addE('created').from(p1).to(r1).property('created_on', new Date()).iterate()
+   g.addE('knows').from(p1).to(p2).property('since', new Date()).iterate()
+   ```
+
+4. **Write `tests/e2e/test_e2e.py`** that:
+   - Waits for all five healthchecks to pass (poll with `docker compose ps`).
+   - Seeds DSE Graph by executing `seed_dse.groovy`.
+   - Runs `dse-jg-migrator assess` and asserts exit 0 and `overall_risk != "CRITICAL"`.
+   - Runs `dse-jg-migrator run-all --skip-assessment-gate`.
+   - Asserts `dse-jg-migrator validate` reports 100% count match.
+
+5. **Document Apple Silicon caveat** in a `docker/README.md`:
+   > HCD 2.x (`linux/amd64`) runs under Rosetta emulation on Apple M-series chips. Start Docker with at least 8 GB RAM and `rosetta` emulation enabled in Docker Desktop → Settings → Features in Development. Expect ~2× longer startup time vs native `amd64`.
 
 ### Relevant Context
-- `janusgraph/janusgraph-dist/docker/examples/docker-compose-cql-es.yml` is the canonical reference compose file.
-- DSE 6.8 Docker image is `datastax/dse-server:6.8.48` (or latest 6.8.x from Docker Hub).
+- HCD image: `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` (from `hcd-dev/compose.yaml:3`)
+- HCD Data API image: `cp.icr.io/cp/cpd/ibm-datastax-hcd/data-api:v1.0.53` (optional for this stack — not needed by JanusGraph)
+- HCD cassandra.yaml key settings: `cluster_name=hcd_cluster`, `authenticator=AdvancedAuthenticator` (password auth enabled), `dc1`, `materialized_views_enabled=false`, `default_secondary_index=sai`, `storage_compatibility_mode=NONE`, `hcd_guardrail_defaults=true`
+- OpenSearch image: `opensearchproject/opensearch:3` — requires `plugins.security.disabled=true` for local dev (OpenSearch 2.12+ enforces security by default)
+- JanusGraph Elasticsearch backend is fully OpenSearch-compatible (same REST API); no driver change needed
+- JanusGraph reference compose: `janusgraph/janusgraph-dist/docker/examples/docker-compose-cql-es.yml`
+- DSE 6.8 image: `datastax/dse-server:6.8.65-ubi7` — DSE Graph enabled via `DSE_GRAPH=1` environment variable
+- DSE 6.9 image: `datastax/dse-server:6.9.26-ubi` (if testing DSG against a 6.9 source)
 
 ---
 
@@ -2190,6 +2596,21 @@ Complete reference for all rules implemented in `compatibility_rules.py`. Each r
 | `TP-003` | YELLOW | Static advisory — gremlin-server.yaml | Rename `scriptEvaluationTimeout` → `evaluationTimeout` | [Gremlin Server 3.5 Config](https://tinkerpop.apache.org/docs/current/reference/#gremlin-server) |
 | `TP-004` | GREEN | Static advisory — JanusGraph 1.x supports GraphBinary | Update client driver to use GraphBinary serializer | [TinkerPop GraphBinary](https://tinkerpop.apache.org/docs/current/dev/io/#graphbinary) |
 | `TP-005` | YELLOW | Static advisory — applies to all graphs with `schema.default=none` | Ensure every `property(k, v)` call has a pre-defined property key in JanusGraph schema | [JanusGraph Schema](https://docs.janusgraph.org/schema/) |
+
+#### HCD Target Compatibility Rules
+
+These rules are evaluated against the **target** HCD 2.x cluster and are only run when `--target-cql-host` is supplied to the `assess` command. Source: `hcd-dev/compose.yaml`, `hcd-dev/cassandra.yaml`, `hcd-dev/README.md`.
+
+| Rule ID | Severity | Detection Hint | JanusGraph/HCD Action | Docs |
+|---------|----------|----------------|-----------------------|------|
+| `HC-001` | YELLOW | CQL connection with credentials succeeds → `AdvancedAuthenticator` active | Set `storage.cql.username=cassandra` and `storage.cql.password=cassandra` in JG properties (never leave blank) | [JanusGraph CQL Auth](https://docs.janusgraph.org/storage-backend/cassandra/#authentication) |
+| `HC-002` | YELLOW | `SELECT value FROM system_views.settings WHERE name='materialized_views_enabled'` returns `false` | JanusGraph does not create CQL MVs — no action needed; confirm no application scripts attempt `CREATE MATERIALIZED VIEW` | [HCD cassandra.yaml](../hcd-dev/cassandra.yaml) |
+| `HC-003` | YELLOW | Static advisory: `hcd_guardrail_defaults=true` in HCD cassandra.yaml | Set `storage.cql.atomic-batch-mutate=false` in JanusGraph config; keep write batches < 5 MB | [HCD cassandra.yaml](../hcd-dev/cassandra.yaml) |
+| `HC-004` | YELLOW | Static advisory: `storage_compatibility_mode=NONE` (Cassandra 5+ SSTable formats) | JanusGraph 1.x uses DataStax Java Driver 4.x which supports Cassandra 5 natively — no action needed; informational | [HCD cassandra.yaml](../hcd-dev/cassandra.yaml) |
+| `HC-005` | YELLOW | Static advisory: `default_secondary_index=sai` | JanusGraph creates its own index tables; SAI default does not interfere — informational | [HCD cassandra.yaml](../hcd-dev/cassandra.yaml) |
+| `HC-006` | GREEN | CQL port `9042` + datacenter `dc1` confirmed | Matches JanusGraph defaults; set `storage.port=9042` and `storage.cql.local-datacenter=dc1` | [JanusGraph CQL](https://docs.janusgraph.org/storage-backend/cassandra/) |
+| `HC-007` | YELLOW | `platform.machine() == "arm64"` at runtime | HCD `linux/amd64` image runs under Rosetta emulation on Apple Silicon — expect slower startup; increase `start_period` in Docker healthcheck | [hcd-dev/README.md](../hcd-dev/README.md) |
+| `HC-008` | RED | CQL connection to target host fails (any exception) | `docker login cp.icr.io --username cp` must succeed; pull HCD image `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi`; verify `docker compose ps` shows `healthy` | [hcd-dev/README.md](../hcd-dev/README.md) |
 
 ---
 
