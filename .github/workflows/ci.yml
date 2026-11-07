@@ -50,9 +50,10 @@ jobs:
           cache: pip
           cache-dependency-path: dse-jg-migrator/pyproject.toml
 
-      - name: Install package + mypy
+      - name: Install build tools + package + mypy
         run: |
-          pip install -e ".[dev]" || pip install -e .
+          pip install --upgrade pip setuptools wheel
+          pip install -e .
           pip install mypy
 
       - name: mypy --strict
@@ -75,8 +76,10 @@ jobs:
           cache: pip
           cache-dependency-path: dse-jg-migrator/pyproject.toml
 
-      - name: Install package + test dependencies
-        run: pip install -e . pytest pytest-cov
+      - name: Install build tools + package + test dependencies
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install -e . pytest pytest-cov
 
       - name: pytest (unit tests, coverage ≥ 80%)
         run: |
@@ -97,11 +100,10 @@ jobs:
           cache: pip
           cache-dependency-path: dse-jg-migrator/pyproject.toml
 
-      - name: Install pip-audit
-        run: pip install pip-audit
+      - name: Install build tools + package + pip-audit
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install -e . pip-audit
 
-      - name: Generate requirements from pyproject.toml
-        run: pip install -e . && pip freeze > /tmp/requirements-frozen.txt
-
-      - name: pip-audit (no CVSS ≥ 7.0)
-        run: pip-audit -r /tmp/requirements-frozen.txt
+      - name: pip-audit (no known vulnerabilities)
+        run: pip-audit --local
