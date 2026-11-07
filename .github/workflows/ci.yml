@@ -11,6 +11,7 @@ on:
     paths:
       - "dse-jg-migrator/**"
       - ".github/workflows/ci.yml"
+  workflow_dispatch:
 
 defaults:
   run:
