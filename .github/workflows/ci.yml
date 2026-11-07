@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "dse-jg-migrator/**"
+      - ".github/workflows/ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "dse-jg-migrator/**"
+      - ".github/workflows/ci.yml"
+
+defaults:
+  run:
+    working-directory: dse-jg-migrator
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: dse-jg-migrator/pyproject.toml
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: ruff check (E, F, I, N, UP, S)
+        run: ruff check dse_jg_migrator/ tests/
+
+      - name: ruff format --check
+        run: ruff format --check dse_jg_migrator/ tests/
+
+  typecheck:
+    name: Type-check (mypy --strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: dse-jg-migrator/pyproject.toml
+
+      - name: Install package + mypy
+        run: |
+          pip install -e ".[dev]" || pip install -e .
+          pip install mypy
+
+      - name: mypy --strict
+        run: mypy dse_jg_migrator/ --strict
+
+  test:
+    name: Unit tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: dse-jg-migrator/pyproject.toml
+
+      - name: Install package + test dependencies
+        run: pip install -e . pytest pytest-cov
+
+      - name: pytest (unit tests, coverage ≥ 80%)
+        run: |
+          pytest tests/unit/ -v \
+            --cov=dse_jg_migrator \
+            --cov-report=term-missing \
+            --cov-fail-under=80
+
+  audit:
+    name: Dependency vulnerability scan (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: dse-jg-migrator/pyproject.toml
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Generate requirements from pyproject.toml
+        run: pip install -e . && pip freeze > /tmp/requirements-frozen.txt
+
+      - name: pip-audit (no CVSS ≥ 7.0)
+        run: pip-audit -r /tmp/requirements-frozen.txt
