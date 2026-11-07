@@ -1,6 +1,6 @@
 # DSE Graph → JanusGraph / HCD Migration Accelerator — Implementation Plan
 
-> **Status:** Pending implementation
+> **Status:** ✅ Complete — all sub-tasks ST-0 through ST-9 implemented
 > **Goal:** Build a lightweight CLI tool that (0) optionally seeds a DSE Graph cluster with a representative sample workload for demo/testing, (1) runs a non-destructive pre-migration compatibility assessment, (2) analyses a live DSE Graph cluster, (3) generates a migration plan, and (4) executes the schema + data migration to JanusGraph with HCD as its CQL backend.
 > **Sources:** `bdp/dse-graph/`, `dse-docs-new/modules/graph/`, `janusgraph/`, project structure exploration (November 2026).
 
@@ -183,7 +183,7 @@ IDs **cannot be preserved**. The migrator must maintain a mapping table (`old_id
 
 ## Sub-Task 0 — Pre-Migration Compatibility Assessment
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 > **This sub-task is a mandatory gateway.** The `assess` command must succeed and the user must review the report before `run-all` or any individual migration sub-command will proceed. It is intentionally **read-only** and **non-destructive** — it can be run any number of times without affecting the source cluster.
 
@@ -1015,7 +1015,7 @@ def run_all(ctx, analyze_only, skip_assessment_gate, **kwargs):
 
 ## Sub-Task 1 — Project Scaffold
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 ### Intent
 Create the Python project structure, dependency manifest, and development environment for the `dse-jg-migrator` tool.
@@ -1108,7 +1108,7 @@ Create the Python project structure, dependency manifest, and development enviro
 
 ## Sub-Task 2 — DSE Graph Analyser
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 ### Intent
 Connect to the source DSE Graph cluster and extract a complete, structured description of the graph schema, configuration, and basic statistics (vertex/edge counts per label). This is the *read-only discovery phase* — no writes to either cluster.
@@ -1284,7 +1284,7 @@ Connect to the source DSE Graph cluster and extract a complete, structured descr
 
 ## Sub-Task 3 — Schema Translator
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 ### Intent
 Transform the `<graph-name>-analysis.json` (DSE schema representation) into a JanusGraph-compatible JSON schema definition consumable by `JsonSchemaInitStrategy`. This is a pure data transformation — no network calls required.
@@ -1486,7 +1486,7 @@ Transform the `<graph-name>-analysis.json` (DSE schema representation) into a Ja
 
 ## Sub-Task 4 — JanusGraph / HCD Target Initialiser
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 ### Intent
 Apply the translated JanusGraph JSON schema to the target JanusGraph + HCD cluster, then verify that all schema elements were created successfully.
@@ -1584,7 +1584,7 @@ Apply the translated JanusGraph JSON schema to the target JanusGraph + HCD clust
 
 ## Sub-Task 5 — Data Migrator
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 ### Intent
 Move all vertex and edge data from the DSE Graph cluster to the JanusGraph + HCD cluster in a resumable, batched, fault-tolerant manner.
@@ -1776,7 +1776,7 @@ Move all vertex and edge data from the DSE Graph cluster to the JanusGraph + HCD
 
 ## Sub-Task 6 — Traversal Validator
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 ### Intent
 Run a configurable set of spot-check traversals against both the source DSE Graph and the target JanusGraph, compare results, and report discrepancies.
@@ -1823,7 +1823,7 @@ Run a configurable set of spot-check traversals against both the source DSE Grap
 
 ## Sub-Task 7 — CLI Wrapper and Report Generator
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 ### Intent
 Wire all modules into a cohesive `click`-based CLI with clear command names, help text, and progress output. Generate the final human-readable migration report.
@@ -1920,7 +1920,7 @@ Wire all modules into a cohesive `click`-based CLI with clear command names, hel
 
 ## Sub-Task 8 — Docker / Compose Integration and E2E Test
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 ### Intent
 Provide a Docker Compose file that spins up the **exact production-equivalent local stack** — HCD 2.x (IBM Container Registry), OpenSearch 3, JanusGraph, and a DSE Graph source — so the migration tool can be validated end-to-end without any cloud dependency.
@@ -2234,7 +2234,7 @@ docker login cp.icr.io --username cp
 
 ## Sub-Task 9 — Sample Workload Seeder
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 > **⚠️ This sub-task writes data to the source DSE Graph cluster.**
 > It is a **developer / demo utility only** and must never be run against a production DSE cluster.
