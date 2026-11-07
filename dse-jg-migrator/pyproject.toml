@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dse-jg-migrator"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.1",
+    "gremlinpython>=3.7.0",
+    "cassandra-driver>=3.29.0",
+    "rich>=13.0",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+dse-jg-migrator = "dse_jg_migrator.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+dse_jg_migrator = ["seed_templates/*.groovy"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "S"]
+ignore = ["UP042"]  # StrEnum syntax — keep str+Enum for Python 3.10 compat
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "N802", "E741", "S607"]  # assert/naming/ambiguous-var fine in tests
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Click decorators are not typed; suppress untyped-decorator errors for cli.py
+module = "dse_jg_migrator.cli"
+disallow_untyped_decorators = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end tests requiring a live Docker stack (set E2E_ENABLED=1 to run)",
+]
+
+[tool.coverage.run]
+source = ["dse_jg_migrator"]
+omit = [
+    "dse_jg_migrator/cli.py",      # CLI wiring — covered by e2e tests, not unit tests
+    "dse_jg_migrator/config.py",   # Pure dataclasses; no logic to unit-test
+    "dse_jg_migrator/reporter.py", # Thin report formatter; covered by e2e tests
+]
+
+[tool.coverage.report]
+fail_under = 60

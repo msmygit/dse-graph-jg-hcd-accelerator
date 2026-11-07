@@ -1,0 +1,144 @@
+# docker/docker-compose-e2e.yml
+# Full local simulation: DSE Graph (source) → JanusGraph + HCD 2.x + OpenSearch (target)
+#
+# Prerequisites:
+#   docker login cp.icr.io --username cp   (IBM entitlement key required for HCD image)
+#
+# Usage:
+#   docker compose -f docker/docker-compose-e2e.yml up -d
+#   docker compose -f docker/docker-compose-e2e.yml ps       # verify all healthy
+#   docker compose -f docker/docker-compose-e2e.yml down -v  # full teardown
+
+networks:
+  migrator-net:
+
+volumes:
+  hcd-data:
+  opensearch-data:
+  dse-data:
+
+services:
+
+  # ── TARGET: HCD 2.x (IBM Hyper-Converged Database) ─────────────────────────
+  hcd:
+    image: cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi
+    platform: linux/amd64           # HCD ships amd64 only; Rosetta emulation on Apple Silicon
+    container_name: migrator-hcd
+    networks: [migrator-net]
+    mem_limit: 3G
+    environment:
+      - MAX_HEAP_SIZE=1536M
+      - CLUSTER_NAME=hcd_cluster
+      - DS_LICENSE=accept
+      - HCD_AUTO_CONF_OFF=cassandra.yaml
+      - JVM_EXTRA_OPTS=-Dcassandra.sai.latest.version=ec
+    volumes:
+      - ${PWD}/hcd-dev/cassandra.yaml:/opt/hcd/resources/cassandra/conf/cassandra.yaml:ro
+      - hcd-data:/var/lib/cassandra
+    ports:
+      - "9042:9042"                 # CQL — JanusGraph connects here
+      - "8181:8181"                 # HCD Data API
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -u cassandra -p cassandra -e 'describe keyspaces'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s             # HCD initialises slowly on first start
+
+  # ── TARGET: OpenSearch 3 (index backend for JanusGraph) ─────────────────────
+  opensearch:
+    image: opensearchproject/opensearch:3
+    container_name: migrator-opensearch
+    networks: [migrator-net]
+    mem_limit: 1536M
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_ADMIN_PASSWORD:-Admin_1234!}
+      - plugins.security.disabled=true  # Disable security for local dev
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "9200:9200"                 # REST API — JanusGraph connects here
+      - "9600:9600"                 # Performance analyser
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qv '\"status\":\"red\"'"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  # ── TARGET: JanusGraph (graph engine over HCD + OpenSearch) ─────────────────
+  janusgraph:
+    image: janusgraph/janusgraph:latest
+    container_name: migrator-janusgraph
+    networks: [migrator-net]
+    ports:
+      - "8182:8182"                 # Gremlin WebSocket
+    environment:
+      JANUS_PROPS_TEMPLATE: cql-es
+      # Storage — HCD 2.x
+      janusgraph.storage.backend: cql
+      janusgraph.storage.hostname: hcd
+      janusgraph.storage.port: "9042"
+      janusgraph.storage.cql.local-datacenter: dc1
+      janusgraph.storage.cql.username: cassandra
+      janusgraph.storage.cql.password: ${HCD_CQL_PASSWORD:-cassandra}
+      janusgraph.storage.cql.keyspace: jg_migration_test
+      janusgraph.storage.cql.replication-strategy-class: NetworkTopologyStrategy
+      janusgraph.storage.cql.replication-strategy-options: dc1,1
+      # HCD guardrail: do NOT use atomic batch mutations
+      janusgraph.storage.cql.atomic-batch-mutate: "false"
+      # Index — OpenSearch (elasticsearch driver is wire-compatible)
+      janusgraph.index.search.backend: elasticsearch
+      janusgraph.index.search.hostname: opensearch
+      janusgraph.index.search.port: "9200"
+      janusgraph.index.search.index-name: jg_migration_test
+      # Schema
+      janusgraph.schema.default: none
+    depends_on:
+      hcd:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bin/gremlin.sh", "-e", "scripts/remote-connect.groovy"]
+      interval: 10s
+      timeout: 30s
+      retries: 6
+      start_period: 30s
+
+  # ── SOURCE: DSE Graph 6.8 (Classic + DSG source for migration testing) ──────
+  dse-graph-source:
+    image: datastax/dse-server:6.8.65-ubi7
+    container_name: migrator-dse-source
+    networks: [migrator-net]
+    mem_limit: 2G
+    environment:
+      DS_LICENSE: accept
+      DSE_GRAPH: "1"               # Enables DSE Graph engine
+    volumes:
+      - dse-data:/var/lib/cassandra
+    ports:
+      - "9043:9042"               # DSE CQL (offset to avoid clash with HCD on 9042)
+      - "8183:8182"               # DSE Gremlin WebSocket
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -q UN"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 90s           # DSE takes longer than HCD to initialise
+
+  # ── OPTIONAL: JanusGraph Visualizer (graph exploration UI) ──────────────────
+  janusgraph-visualizer:
+    image: janusgraph/janusgraph-visualizer:latest
+    container_name: migrator-visualizer
+    networks: [migrator-net]
+    ports:
+      - "3000:3000"               # UI
+      - "3001:3001"               # Gremlin proxy
+    environment:
+      - GREMLIN_HOST=migrator-janusgraph
+    depends_on:
+      janusgraph:
+        condition: service_healthy

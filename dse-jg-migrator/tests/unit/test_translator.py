@@ -1,0 +1,293 @@
+"""Unit tests for translator.py."""
+
+from __future__ import annotations
+
+import json
+import os
+
+from dse_jg_migrator.models import (
+    AnalysisResult,
+    EdgeLabelDefinition,
+    IndexDefinition,
+    IndexKey,
+    PartitionKey,
+    PropertyDefinition,
+    UDTDefinition,
+    UDTField,
+    VertexLabelDefinition,
+)
+from dse_jg_migrator.translator import Translator, map_type
+
+# ---------------------------------------------------------------------------
+# Type mapping
+# ---------------------------------------------------------------------------
+
+
+def test_map_type_text() -> None:
+    assert map_type("Text") == "java.lang.String"
+
+
+def test_map_type_uuid() -> None:
+    assert map_type("Uuid") == "java.util.UUID"
+
+
+def test_map_type_bigint() -> None:
+    assert map_type("Bigint") == "java.lang.Long"
+
+
+def test_map_type_point() -> None:
+    assert map_type("Point") == "java.lang.String"
+
+
+def test_map_type_unknown_defaults_to_string() -> None:
+    assert map_type("SomeFutureType") == "java.lang.String"
+
+
+def test_map_type_all_types_return_string() -> None:
+    """All entries in TYPE_MAP must return non-empty strings."""
+    from dse_jg_migrator.translator import TYPE_MAP
+
+    for dse_type, jg_type in TYPE_MAP.items():
+        assert jg_type, f"Empty mapping for {dse_type}"
+
+
+# ---------------------------------------------------------------------------
+# Simple vertex+edge schema translation
+# ---------------------------------------------------------------------------
+
+
+def _make_analysis() -> AnalysisResult:
+    an = AnalysisResult(graph_name="food", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    vl = VertexLabelDefinition(label="person")
+    vl.partition_keys = [PartitionKey(name="person_id", type="Uuid")]
+    vl.properties = [
+        PropertyDefinition(name="name", type="Text"),
+        PropertyDefinition(name="age", type="Int"),
+        PropertyDefinition(name="nickname", type="Text", cardinality="SET", collection="set"),
+    ]
+    an.vertex_labels.append(vl)
+
+    vl2 = VertexLabelDefinition(label="recipe")
+    vl2.partition_keys = [PartitionKey(name="recipe_id", type="Uuid")]
+    vl2.properties = [
+        PropertyDefinition(name="name", type="Text"),
+        PropertyDefinition(name="instructions", type="Text"),
+    ]
+    an.vertex_labels.append(vl2)
+
+    el = EdgeLabelDefinition(label="knows", from_label="person", to_label="person")
+    el.properties = [PropertyDefinition(name="since", type="Date")]
+    an.edge_labels.append(el)
+
+    return an
+
+
+def test_vertex_labels_translated(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = _make_analysis()
+    tr = Translator(analysis=an, output_dir=str(tmp_path))
+    result = tr.run()
+    label_names = [vl.label for vl in result.vertexLabels]
+    assert "person" in label_names
+    assert "recipe" in label_names
+
+
+def test_edge_labels_translated(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = _make_analysis()
+    tr = Translator(analysis=an, output_dir=str(tmp_path))
+    result = tr.run()
+    assert any(el.label == "knows" for el in result.edgeLabels)
+
+
+def test_property_keys_include_partition_key(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = _make_analysis()
+    tr = Translator(analysis=an, output_dir=str(tmp_path))
+    result = tr.run()
+    key_names = [pk.key for pk in result.propertyKeys]
+    assert "person_id" in key_names
+
+
+def test_property_keys_no_duplicates(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = _make_analysis()
+    tr = Translator(analysis=an, output_dir=str(tmp_path))
+    result = tr.run()
+    keys = [pk.key for pk in result.propertyKeys]
+    assert len(keys) == len(set(keys)), "Duplicate property keys in translation result"
+
+
+def test_set_property_has_set_cardinality(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = _make_analysis()
+    tr = Translator(analysis=an, output_dir=str(tmp_path))
+    result = tr.run()
+    nickname = next(pk for pk in result.propertyKeys if pk.key == "nickname")
+    assert nickname.cardinality == "SET"
+
+
+# ---------------------------------------------------------------------------
+# mapOf translation
+# ---------------------------------------------------------------------------
+
+
+def test_map_strategy_flat_creates_two_list_keys(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    vl = VertexLabelDefinition(label="person")
+    vl.properties = [PropertyDefinition(name="badge", type="mapOf(Text, Date)", cardinality="LIST", collection="map")]
+    an.vertex_labels.append(vl)
+    tr = Translator(analysis=an, map_strategy="flat", output_dir=str(tmp_path))
+    result = tr.run()
+    key_names = [pk.key for pk in result.propertyKeys]
+    assert "badge_key" in key_names
+    assert "badge_value" in key_names
+
+
+def test_map_strategy_json_creates_single_key(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    vl = VertexLabelDefinition(label="person")
+    vl.properties = [PropertyDefinition(name="badge", type="mapOf(Text, Date)", cardinality="LIST", collection="map")]
+    an.vertex_labels.append(vl)
+    tr = Translator(analysis=an, map_strategy="json", output_dir=str(tmp_path))
+    result = tr.run()
+    key_names = [pk.key for pk in result.propertyKeys]
+    assert "badge" in key_names
+    assert "badge_key" not in key_names
+
+
+# ---------------------------------------------------------------------------
+# UDT translation
+# ---------------------------------------------------------------------------
+
+
+def test_udt_flat_strategy_expands_fields(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    udt = UDTDefinition(
+        name="address",
+        fields=[
+            UDTField(name="street", type="Text"),
+            UDTField(name="zip", type="Text"),
+        ],
+    )
+    an.udts.append(udt)
+    tr = Translator(analysis=an, udt_strategy="flat", output_dir=str(tmp_path))
+    result = tr.run()
+    key_names = [pk.key for pk in result.propertyKeys]
+    assert "address_street" in key_names
+    assert "address_zip" in key_names
+
+
+def test_udt_json_strategy_single_key(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    udt = UDTDefinition(
+        name="address",
+        fields=[
+            UDTField(name="street", type="Text"),
+        ],
+    )
+    an.udts.append(udt)
+    tr = Translator(analysis=an, udt_strategy="json", output_dir=str(tmp_path))
+    result = tr.run()
+    key_names = [pk.key for pk in result.propertyKeys]
+    assert "address" in key_names
+    assert "address_street" not in key_names
+
+
+# ---------------------------------------------------------------------------
+# Geo index auto-generation
+# ---------------------------------------------------------------------------
+
+
+def test_point_property_generates_geo_mixed_index(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    vl = VertexLabelDefinition(label="location")
+    vl.properties = [PropertyDefinition(name="geo_point", type="Point")]
+    an.vertex_labels.append(vl)
+    tr = Translator(analysis=an, output_dir=str(tmp_path))
+    result = tr.run()
+    geo_indexes = [mi for mi in result.mixedIndexes if any(k.propertyKey == "geo_point" for k in mi.keys)]
+    assert len(geo_indexes) == 1
+    params = geo_indexes[0].keys[0].parameters
+    assert any("PREFIX_TREE" in p.get("value", "") for p in params)
+
+
+def test_polygon_property_does_not_generate_geo_index(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    vl = VertexLabelDefinition(label="route")
+    vl.properties = [PropertyDefinition(name="path", type="Polygon")]
+    an.vertex_labels.append(vl)
+    tr = Translator(analysis=an, output_dir=str(tmp_path))
+    result = tr.run()
+    geo_indexes = [mi for mi in result.mixedIndexes if any(k.propertyKey == "path" for k in mi.keys)]
+    assert len(geo_indexes) == 0
+
+
+# ---------------------------------------------------------------------------
+# Index translation
+# ---------------------------------------------------------------------------
+
+
+def test_mv_translates_to_composite_index(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    idx = IndexDefinition(kind="materializedView", name="person_by_name", element="vertex", label="person")
+    idx.keys = [IndexKey(name="name")]
+    an.indexes.append(idx)
+    tr = Translator(analysis=an, output_dir=str(tmp_path))
+    result = tr.run()
+    assert any(ci.name == "person_by_name" for ci in result.compositeIndexes)
+
+
+def test_search_index_translates_to_mixed_index(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    idx = IndexDefinition(kind="searchIndex", name="recipe_search", element="vertex", label="recipe")
+    idx.keys = [
+        IndexKey(name="instructions", as_mapping="asText"),
+        IndexKey(name="cuisine", as_mapping="asString"),
+    ]
+    an.indexes.append(idx)
+    tr = Translator(analysis=an, output_dir=str(tmp_path))
+    result = tr.run()
+    mixed = next(mi for mi in result.mixedIndexes if mi.name == "recipe_search")
+    assert len(mixed.keys) == 2
+    text_key = next(k for k in mixed.keys if k.propertyKey == "instructions")
+    assert any("TEXT" in p["value"] for p in text_key.parameters)
+
+
+def test_inverse_mv_translates_to_vertex_centric_in(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    idx = IndexDefinition(
+        kind="materializedView", name="follows_inverse", element="edge", label="follows", inverse=True
+    )
+    an.indexes.append(idx)
+    tr = Translator(analysis=an, output_dir=str(tmp_path))
+    result = tr.run()
+    vc = next(vc for vc in result.vertexCentricEdgeIndexes if vc.name == "follows_inverse")
+    assert vc.direction == "IN"
+
+
+# ---------------------------------------------------------------------------
+# JSON schema output
+# ---------------------------------------------------------------------------
+
+
+def test_schema_json_written(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = _make_analysis()
+    tr = Translator(analysis=an, output_dir=str(tmp_path))
+    tr.run()
+    schema_file = os.path.join(str(tmp_path), "food-janusgraph-schema.json")
+    assert os.path.exists(schema_file)
+    with open(schema_file, encoding="utf-8") as fh:
+        data = json.load(fh)
+    assert "propertyKeys" in data
+    assert "vertexLabels" in data
+    assert "edgeLabels" in data
+    assert "compositeIndexes" in data
+    assert "mixedIndexes" in data
+    assert "vertexCentricEdgeIndexes" in data
+
+
+def test_translation_report_written(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = _make_analysis()
+    tr = Translator(analysis=an, output_dir=str(tmp_path))
+    tr.run()
+    report_file = os.path.join(str(tmp_path), "food-translation-report.md")
+    assert os.path.exists(report_file)
+    content = open(report_file, encoding="utf-8").read()
+    assert "## Vertex Labels" in content
+    assert "person" in content
