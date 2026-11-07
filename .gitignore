@@ -1,0 +1,4 @@
+# ignore bdp and janusgraph
+./bdp
+./janusgraph
+./dse-docs-new
