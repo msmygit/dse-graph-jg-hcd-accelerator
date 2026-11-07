@@ -1,7 +1,7 @@
 # DSE Graph → JanusGraph / HCD Migration Accelerator — Implementation Plan
 
-> **Status:** Pending implementation  
-> **Goal:** Build a lightweight CLI tool that (1) analyses a live DSE Graph cluster, (2) generates a migration plan, and (3) executes the schema + data migration to JanusGraph with HCD as its CQL backend.  
+> **Status:** Pending implementation
+> **Goal:** Build a lightweight CLI tool that (0) runs a non-destructive pre-migration compatibility assessment, (1) analyses a live DSE Graph cluster, (2) generates a migration plan, and (3) executes the schema + data migration to JanusGraph with HCD as its CQL backend.
 > **Sources:** `bdp/dse-graph/`, `dse-docs-new/modules/graph/`, `janusgraph/`, project structure exploration (November 2026).
 
 ---
@@ -11,19 +11,21 @@
 2. [Scope](#2-scope)
 3. [Architecture Overview](#3-architecture-overview)
 4. [Key Concepts: DSE Graph vs JanusGraph](#4-key-concepts-dse-graph-vs-janusgraph)
-5. [Sub-Task 1 — Project Scaffold](#sub-task-1--project-scaffold)
-6. [Sub-Task 2 — DSE Graph Analyser](#sub-task-2--dse-graph-analyser)
-7. [Sub-Task 3 — Schema Translator](#sub-task-3--schema-translator)
-8. [Sub-Task 4 — JanusGraph / HCD Target Initialiser](#sub-task-4--janusgraph--hcd-target-initialiser)
-9. [Sub-Task 5 — Data Migrator](#sub-task-5--data-migrator)
-10. [Sub-Task 6 — Traversal Validator](#sub-task-6--traversal-validator)
-11. [Sub-Task 7 — CLI Wrapper and Report Generator](#sub-task-7--cli-wrapper-and-report-generator)
-12. [Sub-Task 8 — Docker / Compose Integration and E2E Test](#sub-task-8--docker--compose-integration-and-e2e-test)
-13. [Appendix A — Data Type Mapping Table](#appendix-a--data-type-mapping-table)
-14. [Appendix B — Index Type Mapping Table](#appendix-b--index-type-mapping-table)
-15. [Appendix C — DSE Graph Schema Syntax Reference](#appendix-c--dse-graph-schema-syntax-reference)
-16. [Appendix D — JanusGraph JSON Schema Format](#appendix-d--janusgraph-json-schema-format)
-17. [Appendix E — Known Gaps and Caveats](#appendix-e--known-gaps-and-caveats)
+5. [Sub-Task 0 — Pre-Migration Compatibility Assessment](#sub-task-0--pre-migration-compatibility-assessment)
+6. [Sub-Task 1 — Project Scaffold](#sub-task-1--project-scaffold)
+7. [Sub-Task 2 — DSE Graph Analyser](#sub-task-2--dse-graph-analyser)
+8. [Sub-Task 3 — Schema Translator](#sub-task-3--schema-translator)
+9. [Sub-Task 4 — JanusGraph / HCD Target Initialiser](#sub-task-4--janusgraph--hcd-target-initialiser)
+10. [Sub-Task 5 — Data Migrator](#sub-task-5--data-migrator)
+11. [Sub-Task 6 — Traversal Validator](#sub-task-6--traversal-validator)
+12. [Sub-Task 7 — CLI Wrapper and Report Generator](#sub-task-7--cli-wrapper-and-report-generator)
+13. [Sub-Task 8 — Docker / Compose Integration and E2E Test](#sub-task-8--docker--compose-integration-and-e2e-test)
+14. [Appendix A — Data Type Mapping Table](#appendix-a--data-type-mapping-table)
+15. [Appendix B — Index Type Mapping Table](#appendix-b--index-type-mapping-table)
+16. [Appendix C — DSE Graph Schema Syntax Reference](#appendix-c--dse-graph-schema-syntax-reference)
+17. [Appendix D — JanusGraph JSON Schema Format](#appendix-d--janusgraph-json-schema-format)
+18. [Appendix E — Known Gaps and Caveats](#appendix-e--known-gaps-and-caveats)
+19. [Appendix F — Compatibility Assessment Rule Catalogue](#appendix-f--compatibility-assessment-rule-catalogue)
 
 ---
 
@@ -50,6 +52,7 @@ Both engines use [Apache TinkerPop 3.x](https://tinkerpop.apache.org/) as the Gr
 ## 2. Scope
 
 ### In scope
+- **Assess** (read-only, non-destructive) a running DSE Graph cluster — query patterns, schema, configuration, OLAP usage, security features — and produce a structured compatibility report before any migration action.
 - **Analyse** a running DSE Graph cluster (Classic or DSG) via Gremlin + CQL connections.
 - **Extract** all schema elements: vertex labels, edge labels, property keys, UDTs, all index types, graph-level configuration.
 - **Translate** the extracted schema into a JanusGraph JSON schema definition.
@@ -73,6 +76,13 @@ Both engines use [Apache TinkerPop 3.x](https://tinkerpop.apache.org/) as the Gr
 │                   dse-jg-migrator CLI                   │
 │                     (Python 3.11+)                      │
 └───────────┬─────────────────────────────────────────────┘
+            │
+   ┌────────▼────────────────────────────────────────┐
+   │  STEP 0 — Compatibility Assessor  (assess cmd)  │◀── --analyze-only flag
+   │  read-only: schema + query + config + risk score│
+   └────────┬────────────────────────────────────────┘
+            │ assessment-report.{md,json,html}
+            │ (GATE — user reviews & approves before migration)
             │
    ┌────────▼────────┐      ┌──────────────────────┐
    │  DSE Analyser   │      │  Schema Translator   │
@@ -161,6 +171,700 @@ IDs **cannot be preserved**. The migrator must maintain a mapping table (`old_id
 
 ---
 
+## Sub-Task 0 — Pre-Migration Compatibility Assessment
+
+**Status:** `[ ] pending`
+
+> **This sub-task is a mandatory gateway.** The `assess` command must succeed and the user must review the report before `run-all` or any individual migration sub-command will proceed. It is intentionally **read-only** and **non-destructive** — it can be run any number of times without affecting the source cluster.
+
+### Intent
+
+Connect to a live DSE Graph cluster (Classic or DSG), interrogate its schema, configuration, traversal patterns, and operational metadata, then score every discovered feature against JanusGraph's capability matrix. Emit a structured, human-readable assessment report in Markdown, JSON, and HTML formats that the operator can review, share with stakeholders, and use to plan remediation before triggering the full migration.
+
+The assessment covers seven dimensions:
+1. **Query pattern catalogue** — which DSE-specific Gremlin steps, predicates, and traversal modifiers are in use.
+2. **Schema compatibility** — vertex/edge label definitions, property types, cardinalities, UDTs, collection types.
+3. **Index compatibility** — search indexes (Solr), materialized views, secondary indexes, vertex-centric indexes.
+4. **Configuration compatibility** — `schema_mode`, `allow_scan`, replication, consistency, lambda restrictions.
+5. **OLAP / Spark usage** — detection of `a` traversal source, `SparkGraphComputer`, `GraphFrames` patterns.
+6. **Security features** — RLAC / Row-Level Security usage (flags for manual recreation).
+7. **TinkerPop version delta** — patterns that break between TinkerPop 3.4.x (DSE) and 3.7.x (JanusGraph).
+
+### Expected Outcomes
+
+- `dse-jg-migrator assess --source-gremlin-url ws://<host>:8182/gremlin --source-cql-host <h> --graph-name <g>` exits 0 and writes:
+  - `<graph-name>-assessment-report.md` — human-readable full report
+  - `<graph-name>-assessment-report.json` — machine-parseable findings (see schema below)
+  - `<graph-name>-assessment-report.html` — standalone HTML with collapsible sections
+- The report contains an **overall risk level**: `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`.
+- The `run-all` command reads `<graph-name>-assessment-report.json`, checks `overall_risk`, and aborts if the operator has not passed `--skip-assessment-gate` when risk is `HIGH` or `CRITICAL`.
+- `--analyze-only` flag on `run-all` runs only Step 0 and exits — no migration is triggered.
+- All operations are read-only. No writes to either cluster.
+
+### Todo List
+
+#### Step 0.1 — Define the compatibility rule catalogue (`compatibility_rules.py`)
+
+Create a static Python module containing every known incompatibility as a dataclass-driven rule. Rules are the single source of truth for what the assessor checks and how it scores findings.
+
+```python
+# compatibility_rules.py
+from dataclasses import dataclass, field
+from enum import Enum
+
+class Severity(str, Enum):
+    GREEN  = "GREEN"   # Fully compatible; no action required
+    YELLOW = "YELLOW"  # Needs adaptation; migration proceeds with changes
+    RED    = "RED"     # Blocker; migration should not proceed until resolved
+
+class Category(str, Enum):
+    QUERY_PATTERN    = "query_pattern"
+    SCHEMA           = "schema"
+    INDEX            = "index"
+    CONFIGURATION    = "configuration"
+    OLAP             = "olap"
+    SECURITY         = "security"
+    TINKERPOP_DELTA  = "tinkerpop_delta"
+    DATA_TYPE        = "data_type"
+
+@dataclass
+class CompatibilityRule:
+    rule_id:        str           # e.g. "QP-001"
+    category:       Category
+    severity:       Severity
+    title:          str
+    description:    str           # What the rule detects
+    detection_hint: str           # Regex or Gremlin query to find this pattern
+    jg_equivalent:  str           # What to do in JanusGraph (empty if RED/unsupported)
+    docs_link:      str           # Link to JanusGraph or TinkerPop docs
+    remediation:    str           # Step-by-step fix guidance
+```
+
+The catalogue must contain (at minimum) the following rules, derived from the compatibility research in this codebase:
+
+**Query Pattern Rules (QP-xxx):**
+
+| Rule ID | Severity | Pattern Detected | JanusGraph Equivalent |
+|---------|----------|------------------|-----------------------|
+| `QP-001` | YELLOW | `g.with('allow-filtering')` | Remove — JanusGraph raises `ExceptionForMissingBackingIndex` instead; ensure index exists |
+| `QP-002` | YELLOW | `g.with('label-warning', false)` | Remove — not applicable in JanusGraph |
+| `QP-003` | YELLOW | `g.with('ignore-unindexed')` | Remove — JanusGraph enforces index or throws |
+| `QP-004` | YELLOW | `g.with('consistency', ...)` | Set `storage.cql.read-consistency-level` / `write-consistency-level` in JG config |
+| `QP-005` | RED | `a.` (OLAP traversal source) | Requires separate JanusGraph OLAP/HadoopGraph setup; out of automated migration scope |
+| `QP-006` | RED | `Search.prefix(...)` / `Search.token(...)` | Use `Text.textContainsPrefix()` with a mixed index backed by Elasticsearch |
+| `QP-007` | RED | `Search.fuzzy(...)` / `Search.tokenFuzzy(...)` | Use `Text.textContainsFuzzy()` with Elasticsearch backend |
+| `QP-008` | RED | `Search.regex(...)` / `Search.tokenRegex(...)` | Use `Text.textContainsRegex()` with Elasticsearch backend |
+| `QP-009` | RED | `Search.phrase(...)` | Use `Text.textContainsPhrase()` with Elasticsearch backend |
+| `QP-010` | YELLOW | `Geo.inside(Geo.point(...), radius)` | Use `Geo.within(Geoshape.circle(lat, lon, radius))` with `Mapping.PREFIX_TREE` mixed index |
+| `QP-011` | YELLOW | `Geo.inside(Geo.polygon(...))` | Use `Geo.within(Geoshape.fromWkt(wkt))` — polygon WKT conversion required |
+| `QP-012` | YELLOW | `DseGraph.traversal()` | Replace with `JanusGraphFactory.open(conf).traversal()` |
+| `QP-013` | YELLOW | `g.V(['~label':'X','key': v])` (DSG partition key lookup) | Replace with `g.V().hasLabel('X').has('key', v)` |
+| `QP-014` | YELLOW | Lambda / Groovy closure in traversal (`.map{...}`, `.filter{...}`) | JanusGraph allows by default; verify `evaluationTimeout` config |
+| `QP-015` | YELLOW | `graph.tx().open()` / `.commit()` / `.rollback()` (Classic) | Directly compatible — JanusGraph re-introduces `graph.tx()` |
+| `QP-016` | YELLOW | TinkerPop 3.4 `repeat()` local semantics | JanusGraph uses TinkerPop 3.7 global-semantics default; add `.repeat(...).until(...)` guards |
+| `QP-017` | YELLOW | `valueMap()` without `by(unfold())` | TinkerPop 3.5+ `valueMap()` returns `Map<String, List>`; add `.by(unfold())` for flat values |
+
+**Schema Rules (SC-xxx):**
+
+| Rule ID | Severity | Pattern Detected | Notes |
+|---------|----------|-----------------|-------|
+| `SC-001` | YELLOW | `partitionBy(...)` / `clusterBy(...)` on vertex label | JanusGraph manages CQL storage internally; these become regular property keys |
+| `SC-002` | YELLOW | `fromExistingTable(...)` | DSG-specific; JanusGraph cannot map to an existing CQL table |
+| `SC-003` | RED | `mapOf(K, V)` property type | JanusGraph has no native map; use `--map-strategy flat\|json` |
+| `SC-004` | YELLOW | `setOf(X)` / `listOf(X)` | Maps to `Cardinality.SET` / `Cardinality.LIST` — fully automated |
+| `SC-005` | RED | UDT (`frozen(typeOf(...))`) | Use `--udt-strategy flat\|json` |
+| `SC-006` | YELLOW | `tupleOf(...)` property type | Serialise to JSON string; flag for app-layer reconstruction |
+| `SC-007` | RED | Meta-properties (`v.property('x').property('meta_key', v)`) | Removed in DSG Core; JanusGraph supports but semantics differ — manual review required |
+| `SC-008` | YELLOW | `property('x', Point)` / geo type in schema | Handled automatically: WKT string + `Mapping.PREFIX_TREE` mixed index generated for `Point`; `Polygon`/`Linestring` stored as WKT, no auto index |
+
+**Index Rules (IX-xxx):**
+
+| Rule ID | Severity | Pattern Detected | Notes |
+|---------|----------|-----------------|-------|
+| `IX-001` | YELLOW | `materializedView(...)` | Maps to JanusGraph composite index; MV partition key → composite index key |
+| `IX-002` | YELLOW | `materializedView(...).inverse()` | Maps to `buildEdgeIndex(..., Direction.IN, ...)` |
+| `IX-003` | YELLOW | `secondaryIndex(...)` | Maps to composite index (equality predicate only) |
+| `IX-004` | YELLOW | `searchIndex().by('x').asText()` | Maps to mixed index with `Mapping.TEXT` on Elasticsearch |
+| `IX-005` | YELLOW | `searchIndex().by('x').asString()` | Maps to mixed index with `Mapping.STRING` |
+| `IX-006` | YELLOW | `searchIndex()` on geo property | Maps to mixed index with `Mapping.PREFIX_TREE`; auto-generated for `Point` |
+| `IX-007` | RED | `schema.indexFor(...).analyze()` | DSE query-plan analysis; no equivalent in JanusGraph |
+| `IX-008` | YELLOW | Vertex-centric `RelationIndex` | Maps to `buildEdgeIndex()` — direction and sort order preserved |
+
+**Configuration Rules (CF-xxx):**
+
+| Rule ID | Severity | Config Key | Notes |
+|---------|----------|------------|-------|
+| `CF-001` | YELLOW | `graph.schema_mode = Development` | JanusGraph equivalent: `schema.default=default` (auto-creates types) |
+| `CF-002` | YELLOW | `graph.schema_mode = Production` | JanusGraph equivalent: `schema.default=none` (strict) |
+| `CF-003` | YELLOW | `graph.allow_scan = true` | JanusGraph: no direct equivalent; ensure indexes exist or set `query.force-index=false` |
+| `CF-004` | YELLOW | `traversal_sources.*.restrict_lambda = true` | JanusGraph: lambdas allowed by default; `evaluationTimeout` controls execution time |
+| `CF-005` | YELLOW | `graph.system_replication_config` | JanusGraph: configure via `storage.cql.replication-strategy-*` |
+
+**OLAP Rules (OL-xxx):**
+
+| Rule ID | Severity | Pattern Detected | Notes |
+|---------|----------|-----------------|-------|
+| `OL-001` | RED | `a` traversal source usage | OLAP via DSE Spark; JanusGraph requires separate HadoopGraph + Spark deployment |
+| `OL-002` | RED | `SparkGraphComputer` in traversal | Same as OL-001 |
+| `OL-003` | RED | `GraphFrames` API usage | No direct equivalent in JanusGraph automated migration |
+
+**Security Rules (SE-xxx):**
+
+| Rule ID | Severity | Feature | Notes |
+|---------|----------|---------|-------|
+| `SE-001` | RED | RLAC / Row-Level Access Control | DSE Enterprise feature; JanusGraph has no row-level security — requires application-layer implementation |
+| `SE-002` | RED | Row-Level Security policies | Same as SE-001 |
+
+**TinkerPop Delta Rules (TP-xxx):**
+
+| Rule ID | Severity | Breaking Change | Notes |
+|---------|----------|----------------|-------|
+| `TP-001` | YELLOW | `repeat()` step global semantics (3.4→3.7) | Add explicit `.until()` guards to prevent infinite loops |
+| `TP-002` | YELLOW | `valueMap()` return format | Now returns `Map<String, List>` by default; add `.by(unfold())` |
+| `TP-003` | YELLOW | `scriptEvaluationTimeout` → `evaluationTimeout` | Rename in gremlin-server.yaml |
+| `TP-004` | GREEN | GraphBinary serialization | JanusGraph 1.x supports GraphBinary; update client driver to use it |
+| `TP-005` | YELLOW | `property(k, v)` with no schema | TinkerPop 3.7 resolves cardinality from schema; ensure `schema.default` is set correctly |
+
+---
+
+#### Step 0.2 — Build the `Assessor` class (`assessor.py`)
+
+The `Assessor` orchestrates all data collection in a read-only pass against the DSE cluster.
+
+```python
+# assessor.py
+from dataclasses import dataclass, field
+from datetime import datetime
+from gremlin_python.driver import client as gremlin_client
+from cassandra.cluster import Cluster
+
+@dataclass
+class AssessmentFinding:
+    rule_id:     str
+    category:    str
+    severity:    str          # GREEN / YELLOW / RED
+    title:       str
+    detail:      str          # What was found, with context (label name, line, etc.)
+    remediation: str
+    docs_link:   str
+
+@dataclass
+class AssessmentResult:
+    graph_name:   str
+    engine:       str          # classic | dsg
+    assessed_at:  str
+    findings:     list[AssessmentFinding] = field(default_factory=list)
+    overall_risk: str = "LOW"  # LOW | MEDIUM | HIGH | CRITICAL (computed)
+    summary:      dict = field(default_factory=dict)  # counts by severity/category
+
+class Assessor:
+    """Read-only compatibility assessor. Opens no write transactions."""
+
+    def __init__(self, gremlin_url: str, cql_host: str, cql_port: int,
+                 graph_name: str, username: str = None, password: str = None):
+        self.gremlin_url = gremlin_url
+        self.cql_host    = cql_host
+        self.cql_port    = cql_port
+        self.graph_name  = graph_name
+        self._username   = username
+        self._password   = password
+
+    def run(self) -> AssessmentResult:
+        """Execute the full assessment. Returns an AssessmentResult."""
+        result = AssessmentResult(
+            graph_name=self.graph_name,
+            engine=self._detect_engine(),
+            assessed_at=datetime.utcnow().isoformat() + "Z",
+        )
+        result.findings += self._assess_schema()
+        result.findings += self._assess_indexes()
+        result.findings += self._assess_configuration()
+        result.findings += self._assess_query_patterns()
+        result.findings += self._assess_olap()
+        result.findings += self._assess_security()
+        result.findings += self._assess_tinkerpop_delta()
+        result.overall_risk = self._compute_risk(result.findings)
+        result.summary      = self._build_summary(result.findings)
+        return result
+```
+
+**Collection methods — each returns `list[AssessmentFinding]`:**
+
+1. **`_assess_schema()`** — Run `schema.describe()` via Gremlin; parse the DSL string (reuse the DSL parser from Sub-Task 2's `analyser.py`). Check every vertex label, edge label, property key, and UDT against the SC-xxx rules. Emit a finding for each match.
+
+2. **`_assess_indexes()`** — Parse the indexes section of the `schema.describe()` output. Match each index type against the IX-xxx rules.
+
+3. **`_assess_configuration()`** — For DSG: query `system.graph(name).describe()` to get `schema_mode`, `allow_scan`, `replication_config`, `restrict_lambda`. For Classic: read from `bdp/dse-graph/src/doc/graph_opts.yaml_template`-compatible keys. Match against CF-xxx rules.
+
+4. **`_assess_query_patterns()`** — This is the most complex method. It must detect DSE-specific patterns without executing them:
+   ```python
+   def _assess_query_patterns(self) -> list[AssessmentFinding]:
+       """
+       Attempt to identify DSE-specific patterns by querying the Gremlin
+       server's stored script cache (if accessible) or by inspecting the
+       schema describe output for known markers.
+
+       For DSG: also scan CQL `system_schema.views` for MV-based patterns.
+       For both: probe the traversal source names (g, a, dev) to detect OLAP.
+       """
+       findings = []
+       # Probe for 'a' traversal source (OLAP indicator)
+       try:
+           probe = self._gremlin_submit("a.V().limit(0).count()")
+           if probe is not None:
+               findings.append(self._make_finding("QP-005", "OLAP traversal source 'a' is active"))
+       except Exception:
+           pass  # Expected if OLAP not configured — no finding
+       # ... etc. for each QP rule
+       return findings
+   ```
+   > **Note:** Full query-history introspection is not possible without DSE Insights / OpsCenter. For an in-scope, lightweight approach: (a) probe traversal source availability, (b) detect search/geo usage by inspecting index types (a `searchIndex` implies Search.* predicates in application code), (c) emit YELLOW findings for _all_ discovered search and geo indexes noting that `Search.*` predicates require adaptation regardless of whether they appear in the query history.
+
+5. **`_assess_olap()`** — Probe the `a` traversal source (see above) and check `system.graph(name).describe()` for `GraphOLAPEnabled: true`.
+
+6. **`_assess_security()`** — For DSG: query `system.graph(name).describe()` for RLAC configuration. For Classic: query `system.graphs()` and inspect security metadata.
+
+7. **`_assess_tinkerpop_delta()`** — Emit static TP-001 through TP-005 findings for every graph, since TinkerPop version delta affects all DSE graphs migrating to JanusGraph. Severity is YELLOW; these are advisory.
+
+**Risk computation:**
+```python
+def _compute_risk(self, findings: list[AssessmentFinding]) -> str:
+    """
+    CRITICAL: any RED finding in SE (security) category
+    HIGH:     any RED finding in any category
+    MEDIUM:   3+ YELLOW findings, or any YELLOW in OL (OLAP) category
+    LOW:      all GREEN or fewer than 3 YELLOW
+    """
+    reds   = [f for f in findings if f.severity == "RED"]
+    yellows = [f for f in findings if f.severity == "YELLOW"]
+    se_reds = [f for f in reds if f.category == "security"]
+
+    if se_reds:
+        return "CRITICAL"
+    if reds:
+        return "HIGH"
+    if any(f.category == "olap" for f in yellows) or len(yellows) >= 3:
+        return "MEDIUM"
+    return "LOW"
+```
+
+---
+
+#### Step 0.3 — Build the `AssessmentReporter` class (`assessment_reporter.py`)
+
+Renders an `AssessmentResult` into the three output formats.
+
+```python
+# assessment_reporter.py
+
+class AssessmentReporter:
+    def __init__(self, result: AssessmentResult, output_dir: str = "."):
+        self.result     = result
+        self.output_dir = output_dir
+
+    def write_all(self) -> dict[str, str]:
+        """Write MD, JSON, HTML and return dict of {format: filepath}."""
+        return {
+            "markdown": self._write_markdown(),
+            "json":     self._write_json(),
+            "html":     self._write_html(),
+        }
+
+    def _write_markdown(self) -> str: ...
+    def _write_json(self)     -> str: ...
+    def _write_html(self)     -> str: ...
+```
+
+**Markdown report structure** (`<graph-name>-assessment-report.md`):
+
+```markdown
+# Pre-Migration Compatibility Assessment Report
+## Graph: <graph-name>  ·  Engine: dsg  ·  Assessed: 2026-11-07T16:31:30Z
+
+---
+
+## Executive Summary
+
+| Metric | Value |
+|--------|-------|
+| Overall Risk Level | 🔴 HIGH |
+| Total Findings | 14 |
+| Blockers (RED) | 3 |
+| Warnings (YELLOW) | 9 |
+| Compatible (GREEN) | 2 |
+| Effort Estimate | 2–4 weeks (see Roadmap) |
+
+### Key Findings
+- 🔴 **3 Blockers** require resolution before migration can proceed.
+- ⚠️  OLAP (`a` traversal source) detected — requires separate HadoopGraph/Spark setup.
+- ⚠️  2 `Search.*` predicates in use — application code must be updated to use `Text.*` equivalents.
+- ✅  Schema (vertex/edge labels, properties) is 92% compatible.
+
+---
+
+## 1. Cluster Overview
+
+| Property | Value |
+|----------|-------|
+| Graph Name | food |
+| Engine | DSG (Core) |
+| DSE Version | 6.8.48 |
+| Vertex Labels | 5 |
+| Edge Labels | 8 |
+| Property Keys | 23 |
+| Indexes | 12 (3 searchIndex, 4 materializedView, 2 secondaryIndex, 3 vertexCentric) |
+| Vertices (approx.) | 12,500 |
+| Edges (approx.) | 35,000 |
+| Schema Mode | Production |
+| Allow Scan | false |
+| OLAP Enabled | true |
+
+---
+
+## 2. Query Pattern Analysis
+
+### 2.1 DSE-Specific Patterns Detected
+
+| Pattern | Occurrences | Severity | JanusGraph Action |
+|---------|------------|----------|--------------------|
+| OLAP traversal source `a` | Detected (active) | 🔴 RED | Requires HadoopGraph + Spark setup (OL-001) |
+| `searchIndex().asText()` (implies Search.token) | 2 labels | 🟡 YELLOW | Update to `Text.textContains()` + mixed index (IX-004) |
+| `g.with('allow-filtering')` | Schema indicates possible use | 🟡 YELLOW | Remove; ensure indexes exist (QP-001) |
+| `Geo.inside()` | 1 label (location) | 🟡 YELLOW | Use `Geo.within(Geoshape.circle(...))` (QP-010) |
+
+### 2.2 TinkerPop 3.4 → 3.7 Delta
+
+| Change | Risk | Action |
+|--------|------|--------|
+| `repeat()` global semantics | 🟡 YELLOW | Add `.until()` guards |
+| `valueMap()` format | 🟡 YELLOW | Add `.by(unfold())` |
+| `scriptEvaluationTimeout` renamed | 🟡 YELLOW | Update gremlin-server.yaml |
+
+---
+
+## 3. Schema Analysis
+
+### 3.1 Vertex Labels
+
+| Label | Properties | Partition Keys | Collections | UDTs | Compatibility |
+|-------|-----------|----------------|------------|------|---------------|
+| person | name, age, location (Point) | person_id | nickname (setOf) | address | ✅ with geo index auto-gen |
+| recipe | title, instructions, cuisine | recipe_id | tags (setOf) | — | ✅ |
+| meal | name, date | meal_id | courses (listOf) | — | ✅ |
+
+### 3.2 Edge Labels
+
+| Label | From → To | Properties | Compatibility |
+|-------|-----------|-----------|---------------|
+| knows | person → person | since | ✅ |
+| created | person → recipe | date | ✅ |
+| ate | person → meal | portion | ✅ |
+
+### 3.3 Type Conversion Summary
+
+| DSE Type | Count | JanusGraph Mapping | Action |
+|----------|------|--------------------|--------|
+| Text | 12 | java.lang.String | ✅ Auto |
+| Uuid | 4 | java.util.UUID | ✅ Auto |
+| Point | 1 | java.lang.String + geo index | ✅ Auto |
+| setOf(Text) | 3 | Cardinality.SET | ✅ Auto |
+| mapOf(Text,Date) | 1 | flat: _key/_value LIST | ⚠️ Review --map-strategy |
+| UDT address | 1 | flat: address_street, address_zip | ⚠️ Review --udt-strategy |
+
+---
+
+## 4. Index Analysis
+
+| Name | Type | Label | Compatibility | Action |
+|------|------|-------|---------------|--------|
+| person_by_name | materializedView | person | ✅ → Composite Index | Auto |
+| recipe_search | searchIndex (text) | recipe | ⚠️ → Mixed Index (ES) | Auto |
+| location_geo | searchIndex (geo) | location | ✅ → Mixed Index (PREFIX_TREE) | Auto |
+| knows_by_since | vertex-centric | knows | ✅ → buildEdgeIndex() | Auto |
+
+---
+
+## 5. Configuration Compatibility
+
+| DSE Config | Value | JanusGraph Equivalent | Action |
+|-----------|-------|----------------------|--------|
+| schema_mode | Production | schema.default=none | ⚠️ Set in JG properties |
+| allow_scan | false | query.force-index=true | ✅ Compatible |
+| replication_config | NTS, dc1:3 | storage.cql.replication-strategy-options=dc1,3 | ✅ Compatible |
+| restrict_lambda | true | evaluationTimeout (ms) | ⚠️ Review timeout value |
+
+---
+
+## 6. Migration Readiness Assessment
+
+### 6.1 Blockers (must resolve before migration)
+
+| # | Rule | Finding | Remediation |
+|---|------|---------|-------------|
+| 1 | OL-001 | OLAP `a` traversal source active | Deploy JanusGraph + HadoopGraph separately; rewrite OLAP jobs using TinkerPop SparkGraphComputer |
+| 2 | SE-001 | RLAC configured on graph | Implement application-layer access control; no automatic migration path |
+
+### 6.2 Warnings (migration proceeds; application changes needed)
+
+| # | Rule | Finding | Remediation |
+|---|------|---------|-------------|
+| 1 | QP-001 | allow-filtering usage likely | Remove `g.with('allow-filtering')` from application queries; validate indexes |
+| 2 | IX-004 | searchIndex on recipe label | Mixed index auto-created; update app code from `Search.token()` to `Text.textContains()` |
+| ... | | | |
+
+### 6.3 Recommendations
+
+- Run the migration in a non-production environment first.
+- Use `--parallel-labels 4` only after verifying JanusGraph heap headroom.
+- After migration, run `dse-jg-migrator validate` to confirm all counts match.
+
+---
+
+## 7. Detailed Migration Roadmap
+
+### Phase 0 — Pre-migration (owner: DBA / Graph Engineer)
+1. Resolve all RED blockers above.
+2. Confirm Elasticsearch/OpenSearch co-deployment with HCD.
+3. Provision JanusGraph keyspace with correct replication.
+
+### Phase 1 — Schema migration
+1. Run `dse-jg-migrator analyse` to extract full schema.
+2. Run `dse-jg-migrator translate --udt-strategy flat --map-strategy flat`.
+3. Review `<graph>-translation-report.md`.
+4. Run `dse-jg-migrator init-target`.
+5. Verify `mgmt.printSchema()` on JanusGraph.
+
+### Phase 2 — Data migration
+1. Run `dse-jg-migrator migrate` with `--cql-fetch-size 2000 --write-batch 200`.
+2. Monitor checkpoint file progress.
+3. Run `dse-jg-migrator validate`.
+
+### Phase 3 — Application cutover
+1. Update Gremlin connection string to JanusGraph server.
+2. Replace DSE-specific patterns (see Query Pattern Analysis above).
+3. Test `repeat()` traversals with added `.until()` guards.
+4. Update `valueMap()` calls to include `.by(unfold())`.
+5. Decommission DSE Graph cluster after 2-week parallel run.
+
+### Rollback Strategy
+- Schema init is idempotent; re-run `init-target` is safe.
+- Data migration checkpoint: resume from last committed offset.
+- Full rollback: drop JanusGraph keyspace in HCD (`DROP KEYSPACE <name>`); re-run from Phase 1.
+
+---
+*Report generated by `dse-jg-migrator assess`. Source cluster not modified.*
+```
+
+---
+
+#### Step 0.4 — Define the assessment JSON schema
+
+The `<graph-name>-assessment-report.json` must be machine-parseable for downstream tooling and for the `run-all` gate check:
+
+```json
+{
+  "schema_version": "1.0",
+  "graph_name": "food",
+  "engine": "dsg",
+  "assessed_at": "2026-11-07T16:31:30Z",
+  "overall_risk": "HIGH",
+  "summary": {
+    "total_findings": 14,
+    "by_severity": {"RED": 3, "YELLOW": 9, "GREEN": 2},
+    "by_category": {
+      "query_pattern": 5,
+      "schema": 3,
+      "index": 3,
+      "configuration": 2,
+      "olap": 1,
+      "security": 1,
+      "tinkerpop_delta": 5,
+      "data_type": 2
+    }
+  },
+  "cluster_overview": {
+    "dse_version": "6.8.48",
+    "vertex_label_count": 5,
+    "edge_label_count": 8,
+    "property_key_count": 23,
+    "index_count": 12,
+    "approx_vertex_count": 12500,
+    "approx_edge_count": 35000,
+    "schema_mode": "Production",
+    "allow_scan": false,
+    "olap_enabled": true
+  },
+  "findings": [
+    {
+      "rule_id": "OL-001",
+      "category": "olap",
+      "severity": "RED",
+      "title": "OLAP traversal source 'a' is active",
+      "detail": "The 'a' traversal source responds to queries. This indicates active OLAP/Spark usage.",
+      "remediation": "Deploy JanusGraph with HadoopGraph and Apache Spark. Rewrite OLAP jobs.",
+      "docs_link": "https://docs.janusgraph.org/advanced-topics/hadoop/"
+    }
+  ]
+}
+```
+
+---
+
+#### Step 0.5 — Wire the `assess` CLI command and `--analyze-only` flag
+
+**In `cli.py`:**
+
+```python
+@main.command()
+@click.option('--source-gremlin-url', required=True,
+              help='WebSocket URL of the source DSE Gremlin server (ws://<host>:8182/gremlin)')
+@click.option('--source-cql-host',    required=True)
+@click.option('--source-cql-port',    default=9042, show_default=True)
+@click.option('--graph-name',         required=True)
+@click.option('--output-dir',         default='.', show_default=True)
+@click.option('--format', 'output_formats',
+              type=click.Choice(['md', 'json', 'html', 'all']),
+              multiple=True, default=['all'], show_default=True,
+              help='Output format(s). Pass multiple times or use "all".')
+@click.option('--filter-category',
+              type=click.Choice(['query_pattern','schema','index',
+                                 'configuration','olap','security',
+                                 'tinkerpop_delta','data_type','all']),
+              default='all', show_default=True,
+              help='Restrict findings to a specific category.')
+@click.option('--filter-severity',
+              type=click.Choice(['RED','YELLOW','GREEN','all']),
+              default='all', show_default=True,
+              help='Restrict findings to a minimum severity.')
+@click.option('--username', default=None, help='DSE authentication username.')
+@click.option('--password', default=None, help='DSE authentication password.',
+              hide_input=True)
+def assess(source_gremlin_url, source_cql_host, source_cql_port,
+           graph_name, output_dir, output_formats, filter_category,
+           filter_severity, username, password):
+    """
+    Run a read-only pre-migration compatibility assessment.
+
+    Connects to the source DSE Graph cluster, analyses schema, query patterns,
+    indexes, and configuration against JanusGraph's capability matrix, and
+    produces a structured report in Markdown, JSON, and HTML formats.
+
+    This command is NON-DESTRUCTIVE and can be run repeatedly.
+    """
+    from .assessor import Assessor
+    from .assessment_reporter import AssessmentReporter
+
+    assessor = Assessor(
+        gremlin_url=source_gremlin_url,
+        cql_host=source_cql_host,
+        cql_port=source_cql_port,
+        graph_name=graph_name,
+        username=username,
+        password=password,
+    )
+    console.print(f"[bold]Assessing graph:[/bold] {graph_name} at {source_gremlin_url}")
+    with console.status("Running compatibility assessment (read-only)..."):
+        result = assessor.run()
+
+    # Apply filters
+    if filter_category != 'all':
+        result.findings = [f for f in result.findings if f.category == filter_category]
+    if filter_severity != 'all':
+        order = {"RED": 3, "YELLOW": 2, "GREEN": 1}
+        min_level = order[filter_severity]
+        result.findings = [f for f in result.findings if order[f.severity] >= min_level]
+
+    reporter = AssessmentReporter(result, output_dir=output_dir)
+    paths = reporter.write_all()
+
+    _print_risk_banner(result.overall_risk, result.summary)
+    for fmt, path in paths.items():
+        console.print(f"  [green]✓[/green] {fmt:8s} → {path}")
+
+    # Gate: exit non-zero if HIGH/CRITICAL so CI pipelines can fail
+    if result.overall_risk in ("HIGH", "CRITICAL"):
+        console.print(
+            "[red]Assessment gate FAILED.[/red] Resolve RED findings before running migration. "
+            "Pass --skip-assessment-gate to override."
+        )
+        raise SystemExit(1)
+```
+
+**In the `run-all` command** — add gate logic:
+
+```python
+@main.command('run-all')
+@click.option('--analyze-only', is_flag=True, default=False,
+              help='Run only the assessment phase (Step 0) and exit. No data is migrated.')
+@click.option('--skip-assessment-gate', is_flag=True, default=False,
+              help='Proceed with migration even if assessment risk is HIGH or CRITICAL.')
+@click.pass_context
+def run_all(ctx, analyze_only, skip_assessment_gate, **kwargs):
+    """Run the full migration pipeline. Assessment (Step 0) runs first as a gate."""
+    ctx.invoke(assess, ...)
+
+    if analyze_only:
+        console.print("[bold]--analyze-only:[/bold] Stopping after assessment.")
+        return
+
+    # Load assessment result to check gate
+    assessment_path = f"{graph_name}-assessment-report.json"
+    risk = _load_risk(assessment_path)
+    if risk in ("HIGH", "CRITICAL") and not skip_assessment_gate:
+        console.print(
+            f"[red]Migration blocked:[/red] assessment risk is {risk}. "
+            "Resolve RED findings or pass --skip-assessment-gate."
+        )
+        raise SystemExit(1)
+
+    ctx.invoke(analyse, ...)
+    ctx.invoke(translate, ...)
+    ctx.invoke(init_target, ...)
+    ctx.invoke(migrate, ...)
+    ctx.invoke(validate, ...)
+    ctx.invoke(report, ...)
+```
+
+---
+
+#### Step 0.6 — Unit tests (`tests/test_assessor.py`, `tests/test_compatibility_rules.py`)
+
+1. **`test_compatibility_rules.py`** — Verify the complete rule catalogue loads without errors; assert that every rule has a non-empty `remediation` and `docs_link`; assert rule IDs are unique.
+
+2. **`tests/test_assessor.py`** — Mock the Gremlin client and CQL session. Provide a canned `schema.describe()` response containing every DSE pattern (one per rule category). Assert that `Assessor.run()` returns exactly the expected `AssessmentFinding` instances. Test `_compute_risk()` for each threshold case.
+
+3. **`tests/test_assessment_reporter.py`** — Given a synthetic `AssessmentResult` with known findings, assert Markdown output contains the expected table headers; assert JSON output is valid and matches the schema in Step 0.4; assert HTML output contains `<table>` tags.
+
+---
+
+### Relevant Context
+
+| Source | Location | Key information used |
+|--------|----------|--------------------|
+| DSE search predicates | `bdp/dse-graph/src/test/java/com/datastax/bdp/graph/server/GremlinServerIntegrationTest.java:471–483` | `Search.prefix`, `Search.fuzzy`, `Search.token` usage |
+| DSE geo predicates | `dse-docs-new/modules/graph/examples/food/TRAVERSALS/geo_specific_point.gremlin` | `Geo.inside(Geo.point(...), radius)` pattern |
+| OLAP traversal source | `bdp/dse-graph/src/main/java/com/datastax/bdp/graph/server/TraversalSourceManager.java:170–173` | `a` traversal source activation |
+| Configuration template | `bdp/dse-graph/src/doc/graph_opts.yaml_template` | `schema_mode`, `allow_scan`, `restrict_lambda` keys |
+| Schema mode test | `bdp/dse-graph/src/test/java/com/datastax/bdp/graph/server/GremlinServerIntegrationTest.java:250,264` | Development vs Production mode |
+| TinkerPop 3.4→3.8 changes | `janusgraph/janusgraph-core` — TinkerPop 3.8.2 dependency | `repeat()` semantics, `valueMap()` format |
+| JanusGraph Text predicates | `janusgraph/janusgraph-core/src/main/java/org/janusgraph/core/attribute/Text.java` | `textContains`, `textContainsPrefix`, `textContainsFuzzy` |
+| JanusGraph Geo predicates | `janusgraph/janusgraph-core/src/main/java/org/janusgraph/core/attribute/Geo.java` | `within`, `geoIntersect`, `Geoshape` |
+| JanusGraph Mapping enum | `janusgraph/janusgraph-core/src/main/java/org/janusgraph/core/schema/Mapping.java` | `TEXT`, `STRING`, `PREFIX_TREE` |
+| DSE schema syntax | `dse-docs-new/modules/graph/examples/food/` | All `.gremlin` example files |
+
+---
+
+### Output file summary for Sub-Task 0
+
+| File | Format | Consumer |
+|------|--------|---------|
+| `<graph>-assessment-report.md` | Markdown | Human review, sharing |
+| `<graph>-assessment-report.json` | JSON (schema v1.0) | `run-all` gate, CI/CD, programmatic integration |
+| `<graph>-assessment-report.html` | Standalone HTML | Browser viewing, email sharing |
+
+---
+
+
 ## Sub-Task 1 — Project Scaffold
 
 **Status:** `[ ] pending`
@@ -182,22 +886,29 @@ Create the Python project structure, dependency manifest, and development enviro
    ├── README.md
    ├── dse_jg_migrator/
    │   ├── __init__.py
-   │   ├── cli.py               # Click entry point
-   │   ├── analyser.py          # DSE Graph introspection
-   │   ├── translator.py        # Schema mapping logic
-   │   ├── initialiser.py       # JanusGraph target setup
-   │   ├── migrator.py          # Data movement
-   │   ├── validator.py         # Post-migration checks
-   │   ├── reporter.py          # Report generation
-   │   ├── models.py            # Dataclasses for schema elements
-   │   └── config.py            # Configuration dataclasses
+   │   ├── cli.py                    # Click entry point
+   │   ├── assessor.py               # NEW: Pre-migration compatibility engine
+   │   ├── compatibility_rules.py    # NEW: Static rule catalogue (GREEN/YELLOW/RED)
+   │   ├── assessment_reporter.py    # NEW: MD / JSON / HTML report renderer
+   │   ├── analyser.py               # DSE Graph introspection
+   │   ├── translator.py             # Schema mapping logic
+   │   ├── initialiser.py            # JanusGraph target setup
+   │   ├── migrator.py               # Data movement
+   │   ├── validator.py              # Post-migration checks
+   │   ├── reporter.py               # Migration report generation
+   │   ├── models.py                 # Dataclasses for schema elements
+   │   └── config.py                 # Configuration dataclasses
    ├── tests/
+   │   ├── test_assessor.py          # NEW
+   │   ├── test_compatibility_rules.py  # NEW
    │   ├── test_analyser.py
    │   ├── test_translator.py
    │   └── test_models.py
    └── examples/
-       ├── food-graph-schema.json     # Example extracted schema
-       └── janusgraph-target.json     # Example translated schema
+       ├── food-graph-schema.json         # Example extracted schema
+       ├── food-assessment-report.md      # NEW: Example assessment output
+       ├── food-assessment-report.json    # NEW: Machine-parseable assessment
+       └── janusgraph-target.json         # Example translated schema
    ```
 2. Write `pyproject.toml`:
    ```toml
@@ -1378,4 +2089,108 @@ DSG vertex IDs are URI strings (`dseg:/person/uuid`). JanusGraph assigns interna
 
 ---
 
-*End of plan document. Created: November 2026.*
+
+---
+
+## Appendix F — Compatibility Assessment Rule Catalogue
+
+Complete reference for all rules implemented in `compatibility_rules.py`. Each rule is uniquely identified by its `rule_id` and maps directly to a detection method in `assessor.py`.
+
+### Rule ID Naming Convention
+
+```
+<PREFIX>-<NNN>
+│          └── Zero-padded 3-digit sequence within the category
+└── QP = Query Pattern  |  SC = Schema  |  IX = Index
+    CF = Configuration  |  OL = OLAP    |  SE = Security
+    TP = TinkerPop Delta
+```
+
+### Complete Rule Catalogue
+
+#### Query Pattern Rules
+
+| Rule ID | Severity | Detection Hint | JanusGraph Equivalent | Docs |
+|---------|----------|----------------|-----------------------|------|
+| `QP-001` | YELLOW | Regex `g\.with\(['"]allow-filtering['"]\)` in schema markers or CQL `system_schema.views` ALLOW FILTERING clauses | Remove; create required indexes first | [JanusGraph Index Performance](https://docs.janusgraph.org/index-management/index-performance/) |
+| `QP-002` | YELLOW | Regex `g\.with\(['"]label-warning['"]\s*,\s*false\)` | Remove — not applicable | N/A |
+| `QP-003` | YELLOW | Regex `g\.with\(['"]ignore-unindexed['"]\)` | Remove — JanusGraph throws on unindexed | [JanusGraph Exception Handling](https://docs.janusgraph.org/advanced-topics/common-questions/) |
+| `QP-004` | YELLOW | Regex `g\.with\(['"]consistency['"]` | Configure `storage.cql.*-consistency-level` | [JanusGraph CQL Config](https://docs.janusgraph.org/storage-backend/cassandra/) |
+| `QP-005` | RED | Gremlin probe: `a.V().limit(0).count()` succeeds | Separate HadoopGraph + Spark deployment | [JanusGraph Hadoop](https://docs.janusgraph.org/advanced-topics/hadoop/) |
+| `QP-006` | RED | `searchIndex` with `asText()` in schema → implies `Search.token*` in app | `Text.textContains()` / `Text.textContainsPrefix()` | [JanusGraph Text Search](https://docs.janusgraph.org/index-backend/text-search/) |
+| `QP-007` | RED | `searchIndex` with `asText()` + fuzzy threshold | `Text.textContainsFuzzy(term, distance)` | [JanusGraph Text Search](https://docs.janusgraph.org/index-backend/text-search/) |
+| `QP-008` | RED | `searchIndex` + regex patterns inferred | `Text.textContainsRegex(pattern)` | [JanusGraph Text Search](https://docs.janusgraph.org/index-backend/text-search/) |
+| `QP-009` | RED | `searchIndex` with phrase proximity (DSE Solr `phrase` query) | `Text.textContainsPhrase(phrase)` | [JanusGraph Text Search](https://docs.janusgraph.org/index-backend/text-search/) |
+| `QP-010` | YELLOW | `searchIndex()` on a `Point`-typed property | `Geo.within(Geoshape.circle(lat, lon, radius))` with `Mapping.PREFIX_TREE` | [JanusGraph Geo Search](https://docs.janusgraph.org/index-backend/elasticsearch/#geoshape-mappings) |
+| `QP-011` | YELLOW | `searchIndex()` on a `Polygon`-typed property | `Geo.within(Geoshape.fromWkt(wkt))` — requires manual mixed index | [JanusGraph Geo Search](https://docs.janusgraph.org/index-backend/elasticsearch/#geoshape-mappings) |
+| `QP-012` | YELLOW | `DseGraph.traversal()` or `DseGraph.` class references | Replace with `JanusGraphFactory.open(conf).traversal()` | [JanusGraph Getting Started](https://docs.janusgraph.org/getting-started/basic-usage/) |
+| `QP-013` | YELLOW | `g.V(['~label':` partition key ID syntax in schema examples | Replace with `g.V().hasLabel('X').has('key', v)` | [JanusGraph Gremlin](https://docs.janusgraph.org/getting-started/gremlin/) |
+| `QP-014` | YELLOW | Groovy closure syntax `{...}` detected in stored procedures / user scripts | JanusGraph permits by default; set `evaluationTimeout` appropriately | [Gremlin Server Security](https://tinkerpop.apache.org/docs/current/reference/#gremlin-server-sandboxing) |
+| `QP-015` | YELLOW | `graph.tx().open()` / Classic transaction pattern | Directly compatible — JanusGraph `graph.tx()` works identically | [JanusGraph Transactions](https://docs.janusgraph.org/transactions/) |
+| `QP-016` | YELLOW | Schema uses `repeat()` (inferred from traversal examples) | Add `.until()` to all `repeat()` steps | [TinkerPop 3.5 Migration](https://tinkerpop.apache.org/docs/current/upgrade/#_upgrading_for_users) |
+| `QP-017` | YELLOW | Schema uses `valueMap()` (inferred from traversal examples) | Add `.by(unfold())` for flat values | [TinkerPop 3.5 Migration](https://tinkerpop.apache.org/docs/current/upgrade/#_upgrading_for_users) |
+
+#### Schema Rules
+
+| Rule ID | Severity | Detection Hint | JanusGraph Equivalent | Docs |
+|---------|----------|----------------|-----------------------|------|
+| `SC-001` | YELLOW | `\.partitionBy\(` or `\.clusterBy\(` in schema DSL | Become regular property keys; JanusGraph manages CQL layout | [JanusGraph Schema](https://docs.janusgraph.org/schema/) |
+| `SC-002` | YELLOW | `\.fromExistingTable\(` in schema DSL | No equivalent; data must be re-ingested via migration | N/A |
+| `SC-003` | RED | `mapOf\(` in schema DSL | `--map-strategy flat` or `json` | [JanusGraph Properties](https://docs.janusgraph.org/schema/#property-key-cardinality) |
+| `SC-004` | YELLOW | `setOf\(` or `listOf\(` in schema DSL | `Cardinality.SET` or `Cardinality.LIST` — automated | [JanusGraph Cardinality](https://docs.janusgraph.org/schema/#property-key-cardinality) |
+| `SC-005` | RED | `frozen\(typeOf\(` or UDT field references | `--udt-strategy flat` or `json` | N/A |
+| `SC-006` | YELLOW | `tupleOf\(` in schema DSL | Serialise to JSON string | N/A |
+| `SC-007` | RED | Meta-property usage in Classic schema | Manual redesign required | [JanusGraph Meta-Properties](https://docs.janusgraph.org/schema/#vertex-labels) |
+| `SC-008` | YELLOW | Property of type `Point`, `Polygon`, or `Linestring` in schema | `Point` → WKT + auto `Mapping.PREFIX_TREE` index; others → WKT only | [JanusGraph Geo](https://docs.janusgraph.org/index-backend/elasticsearch/#geoshape-mappings) |
+
+#### Index Rules
+
+| Rule ID | Severity | Detection Hint | JanusGraph Equivalent | Docs |
+|---------|----------|----------------|-----------------------|------|
+| `IX-001` | YELLOW | `\.materializedView\(` in schema DSL | `buildCompositeIndex()` | [JanusGraph Composite Indexes](https://docs.janusgraph.org/index-management/index-performance/#composite-index) |
+| `IX-002` | YELLOW | `\.materializedView\(.*\)\..*\.inverse\(\)` | `buildEdgeIndex(..., Direction.IN, ...)` | [JanusGraph Vertex-Centric](https://docs.janusgraph.org/index-management/index-performance/#vertex-centric-indexes) |
+| `IX-003` | YELLOW | `\.secondaryIndex\(` in schema DSL | `buildCompositeIndex()` | [JanusGraph Composite Indexes](https://docs.janusgraph.org/index-management/index-performance/#composite-index) |
+| `IX-004` | YELLOW | `\.searchIndex\(\).*\.asText\(\)` | Mixed index, `Mapping.TEXT`, Elasticsearch backend | [JanusGraph Mixed Indexes](https://docs.janusgraph.org/index-management/index-performance/#mixed-index) |
+| `IX-005` | YELLOW | `\.searchIndex\(\).*\.asString\(\)` | Mixed index, `Mapping.STRING` | [JanusGraph Mixed Indexes](https://docs.janusgraph.org/index-management/index-performance/#mixed-index) |
+| `IX-006` | YELLOW | `\.searchIndex\(\)` on `Point`/`Polygon`/`Linestring` property | Mixed index, `Mapping.PREFIX_TREE`; auto for `Point` | [JanusGraph Geo Search](https://docs.janusgraph.org/index-backend/elasticsearch/#geoshape-mappings) |
+| `IX-007` | RED | `schema\.indexFor\(.*\)\.analyze\(\)` | No equivalent; remove and use `mgmt.printSchema()` instead | N/A |
+| `IX-008` | YELLOW | Vertex-centric index patterns in schema describe output | `buildEdgeIndex()` | [JanusGraph Vertex-Centric](https://docs.janusgraph.org/index-management/index-performance/#vertex-centric-indexes) |
+
+#### Configuration Rules
+
+| Rule ID | Severity | Detection Hint | JanusGraph Equivalent | Docs |
+|---------|----------|----------------|-----------------------|------|
+| `CF-001` | YELLOW | `schema_mode.*Development` in `system.graph().describe()` | `schema.default=default` in janusgraph properties | [JanusGraph Schema Constraints](https://docs.janusgraph.org/schema/schema-constraints/) |
+| `CF-002` | YELLOW | `schema_mode.*Production` | `schema.default=none` | [JanusGraph Schema Constraints](https://docs.janusgraph.org/schema/schema-constraints/) |
+| `CF-003` | YELLOW | `allow_scan.*true` | Ensure indexes cover all traversals; `query.force-index=false` disables enforcement | [JanusGraph Index Performance](https://docs.janusgraph.org/index-management/index-performance/) |
+| `CF-004` | YELLOW | `restrict_lambda.*true` | `evaluationTimeout` (ms) in gremlin-server.yaml | [Gremlin Server Config](https://tinkerpop.apache.org/docs/current/reference/#gremlin-server) |
+| `CF-005` | YELLOW | `system_replication_config` in graph describe | `storage.cql.replication-strategy-class` + `storage.cql.replication-strategy-options` | [JanusGraph CQL](https://docs.janusgraph.org/storage-backend/cassandra/) |
+
+#### OLAP Rules
+
+| Rule ID | Severity | Detection Hint | Notes |
+|---------|----------|----------------|-------|
+| `OL-001` | RED | Gremlin probe `a.V().limit(0).count()` returns result (no exception) | Manual HadoopGraph + Spark setup required |
+| `OL-002` | RED | `GraphOLAPEnabled.*true` in `system.graph().describe()` | Same as OL-001 |
+| `OL-003` | RED | `SparkGraphComputer` or `GraphFrames` class reference in stored scripts | No automated migration path |
+
+#### Security Rules
+
+| Rule ID | Severity | Detection Hint | Notes |
+|---------|----------|----------------|-------|
+| `SE-001` | RED | RLAC entries in `system.graph().describe()` or `system_auth.resource_role_permisions` DSE tables | Application-layer access control must be implemented manually |
+| `SE-002` | RED | Row-level security policy references in DSE configuration | Same as SE-001 |
+
+#### TinkerPop Delta Rules
+
+| Rule ID | Severity | Detection Hint | JanusGraph Action | Docs |
+|---------|----------|----------------|-------------------|------|
+| `TP-001` | YELLOW | Static advisory — applies to all graphs | Add `.until()` guards to all `repeat()` steps | [TinkerPop 3.5 Upgrade](https://tinkerpop.apache.org/docs/current/upgrade/#_upgrading_for_users) |
+| `TP-002` | YELLOW | Static advisory — applies to all graphs | Add `.by(unfold())` to `valueMap()` calls | [TinkerPop 3.5 Upgrade](https://tinkerpop.apache.org/docs/current/upgrade/#_upgrading_for_users) |
+| `TP-003` | YELLOW | Static advisory — gremlin-server.yaml | Rename `scriptEvaluationTimeout` → `evaluationTimeout` | [Gremlin Server 3.5 Config](https://tinkerpop.apache.org/docs/current/reference/#gremlin-server) |
+| `TP-004` | GREEN | Static advisory — JanusGraph 1.x supports GraphBinary | Update client driver to use GraphBinary serializer | [TinkerPop GraphBinary](https://tinkerpop.apache.org/docs/current/dev/io/#graphbinary) |
+| `TP-005` | YELLOW | Static advisory — applies to all graphs with `schema.default=none` | Ensure every `property(k, v)` call has a pre-defined property key in JanusGraph schema | [JanusGraph Schema](https://docs.janusgraph.org/schema/) |
+
+---
+
+*End of plan document. Updated: November 2026.*
