@@ -181,10 +181,7 @@ def test_parse_udts_empty_when_no_udts() -> None:
 
 def test_parse_udts_with_udt() -> None:
     analyser = _make_analyser()
-    schema_with_udt = (
-        "schema.type('address').ifNotExists()"
-        ".property('street', Text).property('zip', Text).create()"
-    )
+    schema_with_udt = "schema.type('address').ifNotExists().property('street', Text).property('zip', Text).create()"
     udts = analyser._parse_udts(schema_with_udt)
     assert len(udts) == 1
     assert udts[0].name == "address"

@@ -132,9 +132,12 @@ def test_property_definition_default_cardinality() -> None:
 
 
 def test_udt_definition_fields() -> None:
-    udt = UDTDefinition(name="address", fields=[
-        UDTField(name="street", type="Text"),
-        UDTField(name="zip", type="Text"),
-    ])
+    udt = UDTDefinition(
+        name="address",
+        fields=[
+            UDTField(name="street", type="Text"),
+            UDTField(name="zip", type="Text"),
+        ],
+    )
     assert len(udt.fields) == 2
     assert udt.fields[0].name == "street"

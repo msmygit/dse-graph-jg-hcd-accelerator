@@ -53,23 +53,26 @@ class Reporter:
         # Migration counts from audit log
         audit_path = os.path.join(self.output_dir, f"{self.graph_name}-migration-audit.jsonl")
         if os.path.exists(audit_path):
-            lines += ["", "## Migration Counts", "", "| Kind | Label | Migrated | Failed |",
-                      "|------|-------|----------|--------|"]
+            lines += [
+                "",
+                "## Migration Counts",
+                "",
+                "| Kind | Label | Migrated | Failed |",
+                "|------|-------|----------|--------|",
+            ]
             try:
                 with open(audit_path, encoding="utf-8") as fh:
                     for line in fh:
                         entry: dict[str, Any] = json.loads(line.strip())
                         lines.append(
-                            f"| {entry.get('kind','')} | {entry.get('label','')} "
-                            f"| {entry.get('migrated',0)} | {entry.get('failed',0)} |"
+                            f"| {entry.get('kind', '')} | {entry.get('label', '')} "
+                            f"| {entry.get('migrated', 0)} | {entry.get('failed', 0)} |"
                         )
             except (OSError, json.JSONDecodeError):
                 pass
 
         # Validation summary from report
-        validation_path = os.path.join(
-            self.output_dir, f"{self.graph_name}-validation-report.md"
-        )
+        validation_path = os.path.join(self.output_dir, f"{self.graph_name}-validation-report.md")
         if os.path.exists(validation_path):
             lines += ["", "## Validation Summary", ""]
             try:
@@ -81,9 +84,7 @@ class Reporter:
                 pass
 
         # Translation notes from translation report
-        trans_path = os.path.join(
-            self.output_dir, f"{self.graph_name}-translation-report.md"
-        )
+        trans_path = os.path.join(self.output_dir, f"{self.graph_name}-translation-report.md")
         if os.path.exists(trans_path):
             lines += ["", "## Translation Notes", ""]
             try:

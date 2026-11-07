@@ -238,10 +238,7 @@ class Analyser:
             re.DOTALL,
         ):
             label_name, idx_name, body = m.group(1), m.group(2), m.group(3)
-            keys = [
-                IndexKey(name=km.group(1))
-                for km in re.finditer(r"\.partitionBy\('([^']+)'\)", body)
-            ]
+            keys = [IndexKey(name=km.group(1)) for km in re.finditer(r"\.partitionBy\('([^']+)'\)", body)]
             inverse = ".inverse()" in body
             element = "edge" if "edgeLabel" in m.group(0) else "vertex"
             indexes.append(
@@ -285,10 +282,7 @@ class Analyser:
             re.DOTALL,
         ):
             label_name, idx_name, body = m.group(1), m.group(2), m.group(3)
-            keys = [
-                IndexKey(name=bm.group(1))
-                for bm in re.finditer(r"\.by\('([^']+)'\)", body)
-            ]
+            keys = [IndexKey(name=bm.group(1)) for bm in re.finditer(r"\.by\('([^']+)'\)", body)]
             indexes.append(
                 IndexDefinition(
                     kind="secondaryIndex",

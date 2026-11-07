@@ -38,9 +38,7 @@ def _make_migrator(tmp_path, **kwargs) -> Migrator:  # type: ignore[no-untyped-d
 def test_init_checkpoint_creates_tables(tmp_path) -> None:  # type: ignore[no-untyped-def]
     m = _make_migrator(tmp_path)
     conn = m._init_checkpoint(str(tmp_path / "ckpt.db"))
-    tables = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()
+    tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     table_names = {r[0] for r in tables}
     assert "progress" in table_names
     assert "id_map" in table_names
@@ -117,9 +115,7 @@ def test_flush_vertex_batch_uses_bindings_not_fstrings(tmp_path) -> None:  # typ
     # The injection payload must appear only in bindings, NOT interpolated in script
     assert len(submitted_scripts) == 1
     assert "DROP KEYSPACE" not in submitted_scripts[0]
-    injection_in_bindings = any(
-        "DROP KEYSPACE" in str(v) for b in submitted_bindings for v in b.values()
-    )
+    injection_in_bindings = any("DROP KEYSPACE" in str(v) for b in submitted_bindings for v in b.values())
     assert injection_in_bindings  # value safely passed as binding
 
 

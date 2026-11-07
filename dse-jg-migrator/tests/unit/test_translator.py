@@ -46,6 +46,7 @@ def test_map_type_unknown_defaults_to_string() -> None:
 def test_map_type_all_types_return_string() -> None:
     """All entries in TYPE_MAP must return non-empty strings."""
     from dse_jg_migrator.translator import TYPE_MAP
+
     for dse_type, jg_type in TYPE_MAP.items():
         assert jg_type, f"Empty mapping for {dse_type}"
 
@@ -129,9 +130,7 @@ def test_set_property_has_set_cardinality(tmp_path) -> None:  # type: ignore[no-
 def test_map_strategy_flat_creates_two_list_keys(tmp_path) -> None:  # type: ignore[no-untyped-def]
     an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
     vl = VertexLabelDefinition(label="person")
-    vl.properties = [
-        PropertyDefinition(name="badge", type="mapOf(Text, Date)", cardinality="LIST", collection="map")
-    ]
+    vl.properties = [PropertyDefinition(name="badge", type="mapOf(Text, Date)", cardinality="LIST", collection="map")]
     an.vertex_labels.append(vl)
     tr = Translator(analysis=an, map_strategy="flat", output_dir=str(tmp_path))
     result = tr.run()
@@ -143,9 +142,7 @@ def test_map_strategy_flat_creates_two_list_keys(tmp_path) -> None:  # type: ign
 def test_map_strategy_json_creates_single_key(tmp_path) -> None:  # type: ignore[no-untyped-def]
     an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
     vl = VertexLabelDefinition(label="person")
-    vl.properties = [
-        PropertyDefinition(name="badge", type="mapOf(Text, Date)", cardinality="LIST", collection="map")
-    ]
+    vl.properties = [PropertyDefinition(name="badge", type="mapOf(Text, Date)", cardinality="LIST", collection="map")]
     an.vertex_labels.append(vl)
     tr = Translator(analysis=an, map_strategy="json", output_dir=str(tmp_path))
     result = tr.run()
@@ -161,10 +158,13 @@ def test_map_strategy_json_creates_single_key(tmp_path) -> None:  # type: ignore
 
 def test_udt_flat_strategy_expands_fields(tmp_path) -> None:  # type: ignore[no-untyped-def]
     an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
-    udt = UDTDefinition(name="address", fields=[
-        UDTField(name="street", type="Text"),
-        UDTField(name="zip", type="Text"),
-    ])
+    udt = UDTDefinition(
+        name="address",
+        fields=[
+            UDTField(name="street", type="Text"),
+            UDTField(name="zip", type="Text"),
+        ],
+    )
     an.udts.append(udt)
     tr = Translator(analysis=an, udt_strategy="flat", output_dir=str(tmp_path))
     result = tr.run()
@@ -175,9 +175,12 @@ def test_udt_flat_strategy_expands_fields(tmp_path) -> None:  # type: ignore[no-
 
 def test_udt_json_strategy_single_key(tmp_path) -> None:  # type: ignore[no-untyped-def]
     an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
-    udt = UDTDefinition(name="address", fields=[
-        UDTField(name="street", type="Text"),
-    ])
+    udt = UDTDefinition(
+        name="address",
+        fields=[
+            UDTField(name="street", type="Text"),
+        ],
+    )
     an.udts.append(udt)
     tr = Translator(analysis=an, udt_strategy="json", output_dir=str(tmp_path))
     result = tr.run()
@@ -198,10 +201,7 @@ def test_point_property_generates_geo_mixed_index(tmp_path) -> None:  # type: ig
     an.vertex_labels.append(vl)
     tr = Translator(analysis=an, output_dir=str(tmp_path))
     result = tr.run()
-    geo_indexes = [
-        mi for mi in result.mixedIndexes
-        if any(k.propertyKey == "geo_point" for k in mi.keys)
-    ]
+    geo_indexes = [mi for mi in result.mixedIndexes if any(k.propertyKey == "geo_point" for k in mi.keys)]
     assert len(geo_indexes) == 1
     params = geo_indexes[0].keys[0].parameters
     assert any("PREFIX_TREE" in p.get("value", "") for p in params)
@@ -214,10 +214,7 @@ def test_polygon_property_does_not_generate_geo_index(tmp_path) -> None:  # type
     an.vertex_labels.append(vl)
     tr = Translator(analysis=an, output_dir=str(tmp_path))
     result = tr.run()
-    geo_indexes = [
-        mi for mi in result.mixedIndexes
-        if any(k.propertyKey == "path" for k in mi.keys)
-    ]
+    geo_indexes = [mi for mi in result.mixedIndexes if any(k.propertyKey == "path" for k in mi.keys)]
     assert len(geo_indexes) == 0
 
 
@@ -228,8 +225,7 @@ def test_polygon_property_does_not_generate_geo_index(tmp_path) -> None:  # type
 
 def test_mv_translates_to_composite_index(tmp_path) -> None:  # type: ignore[no-untyped-def]
     an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
-    idx = IndexDefinition(kind="materializedView", name="person_by_name",
-                          element="vertex", label="person")
+    idx = IndexDefinition(kind="materializedView", name="person_by_name", element="vertex", label="person")
     idx.keys = [IndexKey(name="name")]
     an.indexes.append(idx)
     tr = Translator(analysis=an, output_dir=str(tmp_path))
@@ -239,8 +235,7 @@ def test_mv_translates_to_composite_index(tmp_path) -> None:  # type: ignore[no-
 
 def test_search_index_translates_to_mixed_index(tmp_path) -> None:  # type: ignore[no-untyped-def]
     an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
-    idx = IndexDefinition(kind="searchIndex", name="recipe_search",
-                          element="vertex", label="recipe")
+    idx = IndexDefinition(kind="searchIndex", name="recipe_search", element="vertex", label="recipe")
     idx.keys = [
         IndexKey(name="instructions", as_mapping="asText"),
         IndexKey(name="cuisine", as_mapping="asString"),
@@ -256,8 +251,9 @@ def test_search_index_translates_to_mixed_index(tmp_path) -> None:  # type: igno
 
 def test_inverse_mv_translates_to_vertex_centric_in(tmp_path) -> None:  # type: ignore[no-untyped-def]
     an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
-    idx = IndexDefinition(kind="materializedView", name="follows_inverse",
-                          element="edge", label="follows", inverse=True)
+    idx = IndexDefinition(
+        kind="materializedView", name="follows_inverse", element="edge", label="follows", inverse=True
+    )
     an.indexes.append(idx)
     tr = Translator(analysis=an, output_dir=str(tmp_path))
     result = tr.run()

@@ -155,9 +155,7 @@ class Assessor:
             "vertex_label_count": schema.count("schema.vertexLabel("),
             "edge_label_count": schema.count("schema.edgeLabel("),
             "index_count": (
-                schema.count("materializedView(")
-                + schema.count("searchIndex(")
-                + schema.count("secondaryIndex(")
+                schema.count("materializedView(") + schema.count("searchIndex(") + schema.count("secondaryIndex(")
             ),
             "schema_mode": "Development" if "schema_mode.*Development" in schema else "Unknown",
             "olap_enabled": False,
@@ -187,17 +185,13 @@ class Assessor:
         ]
         for rule_id, marker in checks:
             if marker in schema:
-                findings.append(
-                    self._make_finding(rule_id, f"Detected '{marker}' in schema DSL.")
-                )
+                findings.append(self._make_finding(rule_id, f"Detected '{marker}' in schema DSL."))
 
         # SC-007: meta-properties — harder to detect from DSL alone; emit advisory
         if ".property(" in schema:
             # heuristic: if any property chain appears, note meta-property risk
             if "meta_" in schema.lower() or "meta(" in schema.lower():
-                findings.append(
-                    self._make_finding("SC-007", "Possible meta-property usage detected in schema.")
-                )
+                findings.append(self._make_finding("SC-007", "Possible meta-property usage detected in schema."))
 
         return findings
 
@@ -218,14 +212,10 @@ class Assessor:
         ]
         for rule_id, marker in checks:
             if marker in schema:
-                findings.append(
-                    self._make_finding(rule_id, f"Detected '{marker}' in schema DSL.")
-                )
+                findings.append(self._make_finding(rule_id, f"Detected '{marker}' in schema DSL."))
 
         if "materializedView(" in schema and ".inverse()" in schema:
-            findings.append(
-                self._make_finding("IX-002", "Detected inverse materializedView in schema DSL.")
-            )
+            findings.append(self._make_finding("IX-002", "Detected inverse materializedView in schema DSL."))
 
         if "searchIndex(" in schema and "Point" in schema:
             findings.append(
@@ -236,9 +226,7 @@ class Assessor:
             )
 
         if "indexFor(" in schema and ".analyze(" in schema:
-            findings.append(
-                self._make_finding("IX-007", "Detected schema.indexFor().analyze() in schema DSL.")
-            )
+            findings.append(self._make_finding("IX-007", "Detected schema.indexFor().analyze() in schema DSL."))
 
         # IX-008: vertex-centric index (OUT/IN in MV clusterBy)
         if "clusterBy(OUT" in schema or "clusterBy(IN" in schema or "partitionBy(OUT" in schema:
@@ -278,9 +266,7 @@ class Assessor:
         ]
         for rule_id, marker in config_checks:
             if marker in schema:
-                findings.append(
-                    self._make_finding(rule_id, f"Configuration marker '{marker}' detected.")
-                )
+                findings.append(self._make_finding(rule_id, f"Configuration marker '{marker}' detected."))
 
         return findings
 
@@ -312,9 +298,7 @@ class Assessor:
         ]
         for rule_id, marker in schema_pattern_checks:
             if marker in schema:
-                findings.append(
-                    self._make_finding(rule_id, f"Pattern '{marker}' detected in schema/scripts.")
-                )
+                findings.append(self._make_finding(rule_id, f"Pattern '{marker}' detected in schema/scripts."))
 
         # Emit advisory findings for geo and search indexes (imply Search.* usage in app code)
         if "searchIndex(" in schema and ("asText(" in schema or "asString(" in schema):
@@ -341,9 +325,7 @@ class Assessor:
         try:
             result = self._gremlin_submit("a.V().limit(0).count()")
             if result is not None:
-                findings.append(
-                    self._make_finding("QP-005", "OLAP traversal source 'a' responded to probe.")
-                )
+                findings.append(self._make_finding("QP-005", "OLAP traversal source 'a' responded to probe."))
         except Exception:  # noqa: BLE001, S110
             pass  # Expected when OLAP is not configured — no finding  # noqa: S110
 
@@ -371,17 +353,9 @@ class Assessor:
 
         schema = self._raw_schema
         if "SparkGraphComputer" in schema:
-            findings.append(
-                self._make_finding(
-                    "OL-002", "SparkGraphComputer reference detected in schema/scripts."
-                )
-            )
+            findings.append(self._make_finding("OL-002", "SparkGraphComputer reference detected in schema/scripts."))
         if "GraphFrames" in schema:
-            findings.append(
-                self._make_finding(
-                    "OL-003", "GraphFrames API reference detected in schema/scripts."
-                )
-            )
+            findings.append(self._make_finding("OL-003", "GraphFrames API reference detected in schema/scripts."))
 
         return findings
 
@@ -405,13 +379,9 @@ class Assessor:
         combined = schema_lower + desc
 
         if "rlac" in combined or "row_level" in combined or "row-level" in combined:
-            findings.append(
-                self._make_finding("SE-001", "RLAC / Row-Level Access Control marker detected.")
-            )
+            findings.append(self._make_finding("SE-001", "RLAC / Row-Level Access Control marker detected."))
         if "rls_policy" in combined or "row_level_security" in combined:
-            findings.append(
-                self._make_finding("SE-002", "Row-level security policy marker detected.")
-            )
+            findings.append(self._make_finding("SE-002", "Row-level security policy marker detected."))
 
         return findings
 
@@ -488,9 +458,7 @@ class Assessor:
 
             # HC-003 through HC-006: static advisory findings
             for rule_id in ("HC-003", "HC-004", "HC-005", "HC-006"):
-                findings.append(
-                    self._make_finding(rule_id, "HCD target pre-flight advisory.")
-                )
+                findings.append(self._make_finding(rule_id, "HCD target pre-flight advisory."))
 
             # HC-007: Apple Silicon detection
             if platform.machine() == "arm64":

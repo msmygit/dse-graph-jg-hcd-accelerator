@@ -120,8 +120,7 @@ def test_assess_schema_clean_schema() -> None:
     """_assess_schema emits no findings for a clean schema."""
     assessor = _make_assessor()
     assessor._raw_schema = (
-        "schema.vertexLabel('person').property('name', Text).create()\n"
-        "schema.edgeLabel('knows').create()"
+        "schema.vertexLabel('person').property('name', Text).create()\nschema.edgeLabel('knows').create()"
     )
     findings = assessor._assess_schema()
     assert len(findings) == 0
@@ -208,8 +207,13 @@ def test_compute_risk_critical_on_se_red() -> None:
     """Risk is CRITICAL when a RED finding is in the security category."""
     findings = [
         AssessmentFinding(
-            rule_id="SE-001", category="security", severity="RED",
-            title="T", detail="D", remediation="R", docs_link="L",
+            rule_id="SE-001",
+            category="security",
+            severity="RED",
+            title="T",
+            detail="D",
+            remediation="R",
+            docs_link="L",
         )
     ]
     assert Assessor._compute_risk(findings) == "CRITICAL"
@@ -219,8 +223,13 @@ def test_compute_risk_high_on_non_security_red() -> None:
     """Risk is HIGH when a RED finding exists outside security."""
     findings = [
         AssessmentFinding(
-            rule_id="OL-001", category="olap", severity="RED",
-            title="T", detail="D", remediation="R", docs_link="L",
+            rule_id="OL-001",
+            category="olap",
+            severity="RED",
+            title="T",
+            detail="D",
+            remediation="R",
+            docs_link="L",
         )
     ]
     assert Assessor._compute_risk(findings) == "HIGH"
@@ -230,8 +239,13 @@ def test_compute_risk_medium_on_olap_yellow() -> None:
     """Risk is MEDIUM when a YELLOW finding is in the OLAP category."""
     findings = [
         AssessmentFinding(
-            rule_id="OL-X", category="olap", severity="YELLOW",
-            title="T", detail="D", remediation="R", docs_link="L",
+            rule_id="OL-X",
+            category="olap",
+            severity="YELLOW",
+            title="T",
+            detail="D",
+            remediation="R",
+            docs_link="L",
         )
     ]
     assert Assessor._compute_risk(findings) == "MEDIUM"
@@ -241,8 +255,13 @@ def test_compute_risk_medium_on_three_yellows() -> None:
     """Risk is MEDIUM when 3+ YELLOW findings exist."""
     findings = [
         AssessmentFinding(
-            rule_id=f"QP-00{i}", category="query_pattern", severity="YELLOW",
-            title="T", detail="D", remediation="R", docs_link="L",
+            rule_id=f"QP-00{i}",
+            category="query_pattern",
+            severity="YELLOW",
+            title="T",
+            detail="D",
+            remediation="R",
+            docs_link="L",
         )
         for i in range(1, 4)
     ]
@@ -253,8 +272,13 @@ def test_compute_risk_low_on_few_yellows() -> None:
     """Risk is LOW when fewer than 3 YELLOW findings and no RED."""
     findings = [
         AssessmentFinding(
-            rule_id="QP-001", category="query_pattern", severity="YELLOW",
-            title="T", detail="D", remediation="R", docs_link="L",
+            rule_id="QP-001",
+            category="query_pattern",
+            severity="YELLOW",
+            title="T",
+            detail="D",
+            remediation="R",
+            docs_link="L",
         )
     ]
     assert Assessor._compute_risk(findings) == "LOW"
@@ -269,8 +293,13 @@ def test_compute_risk_low_on_all_green() -> None:
     """Risk is LOW when all findings are GREEN."""
     findings = [
         AssessmentFinding(
-            rule_id="HC-006", category="hcd_target", severity="GREEN",
-            title="T", detail="D", remediation="R", docs_link="L",
+            rule_id="HC-006",
+            category="hcd_target",
+            severity="GREEN",
+            title="T",
+            detail="D",
+            remediation="R",
+            docs_link="L",
         )
     ]
     assert Assessor._compute_risk(findings) == "LOW"
@@ -297,9 +326,7 @@ def test_no_write_operations(tmp_path) -> None:  # type: ignore[no-untyped-def]
     for script in submitted_scripts:
         script_upper = script.upper()
         for kw in write_keywords:
-            assert kw.upper() not in script_upper, (
-                f"assessor.py issued a write operation: {script}"
-            )
+            assert kw.upper() not in script_upper, f"assessor.py issued a write operation: {script}"
 
 
 # ---------------------------------------------------------------------------

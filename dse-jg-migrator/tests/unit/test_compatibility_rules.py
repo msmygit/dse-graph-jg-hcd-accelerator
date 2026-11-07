@@ -35,9 +35,14 @@ def test_rule_catalogue_covers_all_categories() -> None:
     # DATA_TYPE is used in assessment summaries but has no dedicated static rules;
     # it is emitted dynamically by the assessor when map/UDT types are found.
     covered_by_static_rules = {
-        Category.QUERY_PATTERN, Category.SCHEMA, Category.INDEX,
-        Category.CONFIGURATION, Category.OLAP, Category.SECURITY,
-        Category.TINKERPOP_DELTA, Category.HCD_TARGET,
+        Category.QUERY_PATTERN,
+        Category.SCHEMA,
+        Category.INDEX,
+        Category.CONFIGURATION,
+        Category.OLAP,
+        Category.SECURITY,
+        Category.TINKERPOP_DELTA,
+        Category.HCD_TARGET,
     }
     for cat in covered_by_static_rules:
         assert cat in categories_in_rules, f"No rule found for category {cat}"
@@ -131,10 +136,19 @@ def test_tp_004_is_green() -> None:
 def test_red_rules_have_empty_jg_equivalent_or_note() -> None:
     """RED blockers should clearly indicate no auto-migration path (jg_equivalent empty or note)."""
     red_blockers_no_auto = [
-        "QP-005", "QP-006", "QP-007", "QP-008", "QP-009",
-        "SC-003", "SC-005", "SC-007",
-        "OL-001", "OL-002", "OL-003",
-        "SE-001", "SE-002",
+        "QP-005",
+        "QP-006",
+        "QP-007",
+        "QP-008",
+        "QP-009",
+        "SC-003",
+        "SC-005",
+        "SC-007",
+        "OL-001",
+        "OL-002",
+        "OL-003",
+        "SE-001",
+        "SE-002",
         "HC-008",
     ]
     for rule_id in red_blockers_no_auto:

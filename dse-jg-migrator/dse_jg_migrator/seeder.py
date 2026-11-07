@@ -38,9 +38,7 @@ class Seeder:
         edge_count: int = 5_000,
     ) -> None:
         if template not in TEMPLATES:
-            raise ValueError(
-                f"Unknown template '{template}'. Choose from: {sorted(TEMPLATES)}"
-            )
+            raise ValueError(f"Unknown template '{template}'. Choose from: {sorted(TEMPLATES)}")
         self.gremlin_url = gremlin_url
         self.template = template
         self.graph_name = graph_name or template
@@ -80,9 +78,7 @@ class Seeder:
         input is interpolated into Groovy to prevent code injection.
         """
         if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*", self.graph_name):
-            raise ValueError(
-                f"Graph name '{self.graph_name}' must match [a-zA-Z][a-zA-Z0-9_]*"
-            )
+            raise ValueError(f"Graph name '{self.graph_name}' must match [a-zA-Z][a-zA-Z0-9_]*")
 
         replacements: dict[str, str] = {
             "{{GRAPH_NAME}}": self.graph_name,
@@ -103,8 +99,4 @@ class Seeder:
         return [s.strip() for s in groovy.split("\n\n") if s.strip()]
 
     def _build_assess_hint(self) -> str:
-        return (
-            f"dse-jg-migrator assess "
-            f"--source-gremlin-url {self.gremlin_url} "
-            f"--graph-name {self.graph_name}"
-        )
+        return f"dse-jg-migrator assess --source-gremlin-url {self.gremlin_url} --graph-name {self.graph_name}"

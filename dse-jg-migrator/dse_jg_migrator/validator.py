@@ -62,31 +62,31 @@ class Validator:
 
         for vl in self.analysis.vertex_labels:
             label = vl.label
-            src = self._get_count(self.source_gremlin_url, label, "vertex",
-                                  self.source_username, self.source_password)
-            tgt = self._get_count(self.target_gremlin_url, label, "vertex",
-                                  self.target_username, self.target_password)
-            results.append({
-                "type": "vertex",
-                "label": label,
-                "source": src,
-                "target": tgt,
-                "match": src == tgt,
-            })
+            src = self._get_count(self.source_gremlin_url, label, "vertex", self.source_username, self.source_password)
+            tgt = self._get_count(self.target_gremlin_url, label, "vertex", self.target_username, self.target_password)
+            results.append(
+                {
+                    "type": "vertex",
+                    "label": label,
+                    "source": src,
+                    "target": tgt,
+                    "match": src == tgt,
+                }
+            )
 
         for el in self.analysis.edge_labels:
             label = el.label
-            src = self._get_count(self.source_gremlin_url, label, "edge",
-                                  self.source_username, self.source_password)
-            tgt = self._get_count(self.target_gremlin_url, label, "edge",
-                                  self.target_username, self.target_password)
-            results.append({
-                "type": "edge",
-                "label": label,
-                "source": src,
-                "target": tgt,
-                "match": src == tgt,
-            })
+            src = self._get_count(self.source_gremlin_url, label, "edge", self.source_username, self.source_password)
+            tgt = self._get_count(self.target_gremlin_url, label, "edge", self.target_username, self.target_password)
+            results.append(
+                {
+                    "type": "edge",
+                    "label": label,
+                    "source": src,
+                    "target": tgt,
+                    "match": src == tgt,
+                }
+            )
 
         return results
 
@@ -121,11 +121,7 @@ class Validator:
 
         try:
             with open(self.validation_queries_path, encoding="utf-8") as fh:
-                lines = [
-                    line.strip()
-                    for line in fh
-                    if line.strip() and not line.strip().startswith("//")
-                ]
+                lines = [line.strip() for line in fh if line.strip() and not line.strip().startswith("//")]
         except OSError:
             return results
 
@@ -138,20 +134,24 @@ class Validator:
                     self.target_gremlin_url, query, {}, self.target_username, self.target_password
                 )
                 match = str(src_result) == str(tgt_result)
-                results.append({
-                    "query": query,
-                    "source": str(src_result)[:100],
-                    "target": str(tgt_result)[:100],
-                    "match": match,
-                })
+                results.append(
+                    {
+                        "query": query,
+                        "source": str(src_result)[:100],
+                        "target": str(tgt_result)[:100],
+                        "match": match,
+                    }
+                )
             except Exception as exc:  # noqa: BLE001
-                results.append({
-                    "query": query,
-                    "source": "ERROR",
-                    "target": "ERROR",
-                    "match": False,
-                    "error": str(exc),
-                })
+                results.append(
+                    {
+                        "query": query,
+                        "source": "ERROR",
+                        "target": "ERROR",
+                        "match": False,
+                        "error": str(exc),
+                    }
+                )
 
         return results
 
@@ -172,9 +172,7 @@ class Validator:
         ]
         for r in report["count_results"]:
             icon = "✅" if r["match"] else "❌"
-            lines.append(
-                f"| {r['type']} | {r['label']} | {r['source']} | {r['target']} | {icon} |"
-            )
+            lines.append(f"| {r['type']} | {r['label']} | {r['source']} | {r['target']} | {icon} |")
 
         if report["smoke_results"]:
             lines += [
@@ -186,13 +184,9 @@ class Validator:
             ]
             for r in report["smoke_results"]:
                 icon = "✅" if r["match"] else "❌"
-                lines.append(
-                    f"| `{r['query'][:60]}` | {r['source'][:30]} | {r['target'][:30]} | {icon} |"
-                )
+                lines.append(f"| `{r['query'][:60]}` | {r['source'][:30]} | {r['target'][:30]} | {icon} |")
 
-        path = os.path.join(
-            self.output_dir, f"{self.analysis.graph_name}-validation-report.md"
-        )
+        path = os.path.join(self.output_dir, f"{self.analysis.graph_name}-validation-report.md")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines))
         return path

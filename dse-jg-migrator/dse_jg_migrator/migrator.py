@@ -143,8 +143,7 @@ class Migrator:
                     new_ids = self._flush_vertex_batch(target_client, write_buf)
                     self._persist_id_map(conn, write_buf, new_ids)
                     self._append_audit(
-                        "vertex", label, total, len(write_buf), len(new_ids),
-                        len(write_buf) - len(new_ids)
+                        "vertex", label, total, len(write_buf), len(new_ids), len(write_buf) - len(new_ids)
                     )
                     total += len(new_ids)
                     write_buf.clear()
@@ -170,11 +169,14 @@ class Migrator:
 
         try:
             while True:
-                results = source_client.submit(
-                    "g.with('allow-filtering').V().hasLabel(lbl)"
-                    ".range(off, end).elementMap()",
-                    {"lbl": label, "off": offset, "end": offset + self.gremlin_batch},
-                ).all().result()
+                results = (
+                    source_client.submit(
+                        "g.with('allow-filtering').V().hasLabel(lbl).range(off, end).elementMap()",
+                        {"lbl": label, "off": offset, "end": offset + self.gremlin_batch},
+                    )
+                    .all()
+                    .result()
+                )
 
                 if not results:
                     break
@@ -211,9 +213,7 @@ class Migrator:
         bindings: dict[str, Any] = {}
 
         for i, (label, props) in enumerate(buf):
-            prop_chain = "".join(
-                f".property(k_{i}_{j}, v_{i}_{j})" for j in range(len(props))
-            )
+            prop_chain = "".join(f".property(k_{i}_{j}, v_{i}_{j})" for j in range(len(props)))
             for j, (k, v) in enumerate(props.items()):
                 bindings[f"k_{i}_{j}"] = k
                 bindings[f"v_{i}_{j}"] = v
@@ -280,9 +280,7 @@ class Migrator:
                 if out_new is None or in_new is None:
                     missing += 1
                     continue
-                edge_props = {
-                    k: v for k, v in row_dict.items() if v is not None
-                }
+                edge_props = {k: v for k, v in row_dict.items() if v is not None}
                 write_buf.append((el.label, out_new, in_new, edge_props))
                 if len(write_buf) >= self.write_batch:
                     flushed = self._flush_edge_batch(target_client, write_buf)
@@ -308,11 +306,14 @@ class Migrator:
 
         try:
             while True:
-                results = source_client.submit(
-                    "g.with('allow-filtering').E().hasLabel(lbl)"
-                    ".range(off, end).elementMap()",
-                    {"lbl": edge_label, "off": offset, "end": offset + self.gremlin_batch},
-                ).all().result()
+                results = (
+                    source_client.submit(
+                        "g.with('allow-filtering').E().hasLabel(lbl).range(off, end).elementMap()",
+                        {"lbl": edge_label, "off": offset, "end": offset + self.gremlin_batch},
+                    )
+                    .all()
+                    .result()
+                )
 
                 if not results:
                     break
@@ -326,7 +327,8 @@ class Migrator:
                     in_new = self._lookup_id(conn, in_id)
                     if out_new and in_new:
                         props = {
-                            k: v for k, v in em_dict.items()
+                            k: v
+                            for k, v in em_dict.items()
                             if not k.startswith("~") and k not in ("id", "label", "outV", "inV")
                         }
                         write_buf.append((edge_label, out_new, in_new, props))
@@ -349,18 +351,14 @@ class Migrator:
         bindings: dict[str, Any] = {}
 
         for i, (label, out_id, in_id, props) in enumerate(buf):
-            prop_chain = "".join(
-                f".property(ek_{i}_{j}, ev_{i}_{j})" for j in range(len(props))
-            )
+            prop_chain = "".join(f".property(ek_{i}_{j}, ev_{i}_{j})" for j in range(len(props)))
             for j, (k, v) in enumerate(props.items()):
                 bindings[f"ek_{i}_{j}"] = k
                 bindings[f"ev_{i}_{j}"] = v
             bindings[f"elbl_{i}"] = label
             bindings[f"eout_{i}"] = out_id
             bindings[f"ein_{i}"] = in_id
-            script_parts.append(
-                f"g.addE(elbl_{i}).from(g.V(eout_{i})).to(g.V(ein_{i})){prop_chain}.id()"
-            )
+            script_parts.append(f"g.addE(elbl_{i}).from(g.V(eout_{i})).to(g.V(ein_{i})){prop_chain}.id()")
 
         if not script_parts:
             return 0
@@ -389,18 +387,13 @@ class Migrator:
             "label TEXT, kind TEXT, last_offset INTEGER, completed INTEGER DEFAULT 0,"
             "PRIMARY KEY (label, kind))"
         )
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS id_map ("
-            "old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL)"
-        )
+        conn.execute("CREATE TABLE IF NOT EXISTS id_map (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_id_map ON id_map(old_id)")
         conn.commit()
         return conn
 
     def _is_completed(self, conn: sqlite3.Connection, label: str, kind: str) -> bool:
-        row = conn.execute(
-            "SELECT completed FROM progress WHERE label=? AND kind=?", (label, kind)
-        ).fetchone()
+        row = conn.execute("SELECT completed FROM progress WHERE label=? AND kind=?", (label, kind)).fetchone()
         return bool(row and row[0])
 
     def _mark_completed(self, conn: sqlite3.Connection, label: str, kind: str) -> None:
@@ -440,9 +433,7 @@ class Migrator:
         conn.commit()
 
     def _lookup_id(self, conn: sqlite3.Connection, old_id: str) -> str | None:
-        row = conn.execute(
-            "SELECT new_id FROM id_map WHERE old_id=?", (old_id,)
-        ).fetchone()
+        row = conn.execute("SELECT new_id FROM id_map WHERE old_id=?", (old_id,)).fetchone()
         return row[0] if row else None
 
     # ──────────────────────────────────────────────────────────────────────────

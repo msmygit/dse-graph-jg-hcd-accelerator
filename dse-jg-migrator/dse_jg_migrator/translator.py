@@ -332,9 +332,7 @@ class Translator:
             )
         )
 
-    def _translate_vertex_centric_index(
-        self, idx: IndexDefinition, result: TranslationResult
-    ) -> None:
+    def _translate_vertex_centric_index(self, idx: IndexDefinition, result: TranslationResult) -> None:
         result.vertexCentricEdgeIndexes.append(
             JGVertexCentricIndex(
                 name=idx.name,
@@ -350,9 +348,7 @@ class Translator:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _write_schema_json(self, result: TranslationResult) -> str:
-        path = os.path.join(
-            self.output_dir, f"{self.analysis.graph_name}-janusgraph-schema.json"
-        )
+        path = os.path.join(self.output_dir, f"{self.analysis.graph_name}-janusgraph-schema.json")
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(result.to_schema_dict(), fh, indent=2)
         return path
@@ -430,9 +426,7 @@ class Translator:
         for vl_d in data.get("vertex_labels", []):
             vl = VertexLabelDefinition(label=vl_d["label"])
             vl.partition_keys = [PartitionKey(**pk) for pk in vl_d.get("partition_keys", [])]
-            vl.properties = [
-                PropertyDefinition(**p) for p in vl_d.get("properties", [])
-            ]
+            vl.properties = [PropertyDefinition(**p) for p in vl_d.get("properties", [])]
             an.vertex_labels.append(vl)
         for el_d in data.get("edge_labels", []):
             el = EdgeLabelDefinition(

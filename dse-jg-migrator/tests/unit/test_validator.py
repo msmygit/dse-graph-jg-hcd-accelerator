@@ -36,8 +36,7 @@ def _make_validator(tmp_path, **kwargs) -> Validator:  # type: ignore[no-untyped
 def test_validate_counts_all_match(tmp_path) -> None:  # type: ignore[no-untyped-def]
     v = _make_validator(tmp_path)
 
-    def mock_submit(url: str, script: str, bindings: dict,
-                    username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
         label = bindings.get("lbl", "")
         counts = {"person": 100, "recipe": 50, "knows": 200}
         return [counts.get(label, 0)]
@@ -52,8 +51,7 @@ def test_validate_counts_mismatch(tmp_path) -> None:  # type: ignore[no-untyped-
     v = _make_validator(tmp_path)
     call_count = [0]
 
-    def mock_submit(url: str, script: str, bindings: dict,
-                    username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
         call_count[0] += 1
         # Source returns 100 for person, target returns 90
         label = bindings.get("lbl", "")
@@ -73,8 +71,7 @@ def test_validate_counts_mismatch(tmp_path) -> None:  # type: ignore[no-untyped-
 def test_validate_counts_gremlin_error_returns_minus_one(tmp_path) -> None:  # type: ignore[no-untyped-def]
     v = _make_validator(tmp_path)
 
-    def mock_submit(url: str, script: str, bindings: dict,
-                    username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
         raise RuntimeError("connection refused")
 
     with patch.object(v, "_submit", side_effect=mock_submit):
@@ -92,8 +89,7 @@ def test_validate_counts_gremlin_error_returns_minus_one(tmp_path) -> None:  # t
 def test_run_writes_report_file(tmp_path) -> None:  # type: ignore[no-untyped-def]
     v = _make_validator(tmp_path)
 
-    def mock_submit(url: str, script: str, bindings: dict,
-                    username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
         return [100]
 
     with patch.object(v, "_submit", side_effect=mock_submit):
@@ -109,8 +105,7 @@ def test_run_writes_report_file(tmp_path) -> None:  # type: ignore[no-untyped-de
 def test_run_overall_pass_true_when_all_match(tmp_path) -> None:  # type: ignore[no-untyped-def]
     v = _make_validator(tmp_path)
 
-    def mock_submit(url: str, script: str, bindings: dict,
-                    username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
         return [100]
 
     with patch.object(v, "_submit", side_effect=mock_submit):
@@ -123,8 +118,7 @@ def test_run_overall_pass_false_on_mismatch(tmp_path) -> None:  # type: ignore[n
     v = _make_validator(tmp_path)
     call_count = [0]
 
-    def mock_submit(url: str, script: str, bindings: dict,
-                    username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
         call_count[0] += 1
         return [100 if "8183" in url else 90]
 

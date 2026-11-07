@@ -58,7 +58,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="g.with('allow-filtering') usage",
         description="DSE Graph allows 'allow-filtering' to bypass index enforcement. "
-                    "JanusGraph raises ExceptionForMissingBackingIndex instead.",
+        "JanusGraph raises ExceptionForMissingBackingIndex instead.",
         detection_hint="with\\('allow-filtering'\\)",
         jg_equivalent="Remove — ensure a backing index exists for the predicate.",
         docs_link="https://docs.janusgraph.org/index-management/index-performance/",
@@ -72,8 +72,7 @@ RULES: list[CompatibilityRule] = [
         category=Category.QUERY_PATTERN,
         severity=Severity.YELLOW,
         title="g.with('label-warning', false) usage",
-        description="DSE-specific traversal modifier that suppresses label warnings. "
-                    "Not applicable in JanusGraph.",
+        description="DSE-specific traversal modifier that suppresses label warnings. Not applicable in JanusGraph.",
         detection_hint="with\\('label-warning'",
         jg_equivalent="Remove — not applicable in JanusGraph.",
         docs_link="https://docs.janusgraph.org/",
@@ -84,8 +83,7 @@ RULES: list[CompatibilityRule] = [
         category=Category.QUERY_PATTERN,
         severity=Severity.YELLOW,
         title="g.with('ignore-unindexed') usage",
-        description="DSE-specific modifier to ignore unindexed property access. "
-                    "JanusGraph enforces indexes or throws.",
+        description="DSE-specific modifier to ignore unindexed property access. JanusGraph enforces indexes or throws.",
         detection_hint="with\\('ignore-unindexed'\\)",
         jg_equivalent="Remove — JanusGraph enforces index or throws ExceptionForMissingBackingIndex.",
         docs_link="https://docs.janusgraph.org/index-management/index-performance/",
@@ -115,7 +113,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.RED,
         title="OLAP traversal source 'a' is active",
         description="The 'a' traversal source indicates active DSE Spark/OLAP usage. "
-                    "JanusGraph requires a separate HadoopGraph + Spark deployment for OLAP.",
+        "JanusGraph requires a separate HadoopGraph + Spark deployment for OLAP.",
         detection_hint="^a\\.",
         jg_equivalent="",
         docs_link="https://docs.janusgraph.org/advanced-topics/hadoop/",
@@ -186,8 +184,7 @@ RULES: list[CompatibilityRule] = [
         category=Category.QUERY_PATTERN,
         severity=Severity.YELLOW,
         title="Geo.inside(Geo.point(...), radius) usage",
-        description="DSE geo predicate for point-in-radius queries. "
-                    "API differs in JanusGraph.",
+        description="DSE geo predicate for point-in-radius queries. API differs in JanusGraph.",
         detection_hint="Geo\\.inside\\(Geo\\.point",
         jg_equivalent="Geo.within(Geoshape.circle(lat, lon, radius)) with a Mapping.PREFIX_TREE mixed index.",
         docs_link="https://docs.janusgraph.org/index-management/index-parameters/#geoshape",
@@ -246,7 +243,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="Lambda / Groovy closure in traversal",
         description="Groovy closures (.map{...}, .filter{...}) in traversals are allowed in JanusGraph "
-                    "but must be within evaluationTimeout.",
+        "but must be within evaluationTimeout.",
         detection_hint="\\.map\\{|\\.filter\\{",
         jg_equivalent="Lambda traversals are allowed; verify evaluationTimeout config.",
         docs_link="https://docs.janusgraph.org/basics/gremlin/",
@@ -276,7 +273,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="TinkerPop 3.4 repeat() local semantics",
         description="In TinkerPop 3.4 (DSE), repeat() had local semantics. "
-                    "TinkerPop 3.7+ (JanusGraph) uses global semantics by default.",
+        "TinkerPop 3.7+ (JanusGraph) uses global semantics by default.",
         detection_hint="\\.repeat\\(",
         jg_equivalent="Add explicit .until() guards to all repeat() traversals.",
         docs_link="https://tinkerpop.apache.org/docs/current/upgrade/",
@@ -291,7 +288,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="valueMap() without by(unfold())",
         description="TinkerPop 3.5+ valueMap() returns Map<String, List> by default. "
-                    "Application code expecting flat values must be updated.",
+        "Application code expecting flat values must be updated.",
         detection_hint="\\.valueMap\\(",
         jg_equivalent="Add .by(unfold()) after valueMap() for flat single values.",
         docs_link="https://tinkerpop.apache.org/docs/current/reference/#valuemap-step",
@@ -307,7 +304,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="partitionBy() / clusterBy() on vertex label",
         description="DSG-specific CQL storage layout directives. JanusGraph manages CQL internally; "
-                    "these become regular property keys.",
+        "these become regular property keys.",
         detection_hint="partitionBy|clusterBy",
         jg_equivalent="Regular property keys in JanusGraph schema.",
         docs_link="https://docs.janusgraph.org/schema/",
@@ -322,7 +319,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="fromExistingTable() on vertex label",
         description="DSG-specific directive to map a graph label to an existing CQL table. "
-                    "JanusGraph cannot map to an existing CQL table.",
+        "JanusGraph cannot map to an existing CQL table.",
         detection_hint="fromExistingTable",
         jg_equivalent="",
         docs_link="https://docs.janusgraph.org/schema/",
@@ -336,8 +333,7 @@ RULES: list[CompatibilityRule] = [
         category=Category.SCHEMA,
         severity=Severity.RED,
         title="mapOf(K, V) property type",
-        description="JanusGraph has no native map property type. "
-                    "Must use --map-strategy flat or json.",
+        description="JanusGraph has no native map property type. Must use --map-strategy flat or json.",
         detection_hint="mapOf\\(",
         jg_equivalent="flat: parallel _key/_value LIST properties; json: single JSON string.",
         docs_link="https://docs.janusgraph.org/schema/",
@@ -366,8 +362,7 @@ RULES: list[CompatibilityRule] = [
         category=Category.SCHEMA,
         severity=Severity.RED,
         title="UDT (frozen(typeOf(...))) property type",
-        description="JanusGraph has no native UDT support. "
-                    "Must use --udt-strategy flat or json.",
+        description="JanusGraph has no native UDT support. Must use --udt-strategy flat or json.",
         detection_hint="frozen\\(typeOf|typeOf\\(",
         jg_equivalent="flat: one property key per UDT field; json: single JSON string.",
         docs_link="https://docs.janusgraph.org/schema/",
@@ -397,7 +392,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.RED,
         title="Meta-properties usage",
         description="Meta-properties (v.property('x').property('meta_key', v)) were removed in DSG Core. "
-                    "JanusGraph supports them but semantics differ.",
+        "JanusGraph supports them but semantics differ.",
         detection_hint="\\.property\\(.*\\)\\.property\\(",
         jg_equivalent="JanusGraph supports meta-properties but semantics differ — manual review required.",
         docs_link="https://docs.janusgraph.org/schema/#property-key-cardinality",
@@ -413,7 +408,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="Geospatial property type (Point) in schema",
         description="DSE Point type is stored as WKT string in JanusGraph. "
-                    "A companion geo mixed index is auto-generated for Point properties.",
+        "A companion geo mixed index is auto-generated for Point properties.",
         detection_hint="Point|Polygon|Linestring",
         jg_equivalent="java.lang.String (WKT) + Mapping.PREFIX_TREE mixed index for Point.",
         docs_link="https://docs.janusgraph.org/index-management/index-parameters/#geoshape",
@@ -430,7 +425,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="materializedView() → composite index",
         description="DSE materializedView maps to a JanusGraph composite index. "
-                    "MV partition key becomes composite index key.",
+        "MV partition key becomes composite index key.",
         detection_hint="materializedView",
         jg_equivalent="JanusGraph composite index.",
         docs_link="https://docs.janusgraph.org/index-management/index-performance/#composite-index",
@@ -442,7 +437,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="materializedView().inverse() → buildEdgeIndex(IN)",
         description="Inverse materializedView on edge label maps to a JanusGraph vertex-centric "
-                    "edge index with Direction.IN.",
+        "edge index with Direction.IN.",
         detection_hint="\\.inverse\\(\\)",
         jg_equivalent="buildEdgeIndex(..., Direction.IN, ...)",
         docs_link="https://docs.janusgraph.org/index-management/index-performance/#vertex-centric-indexes",
@@ -468,7 +463,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="searchIndex().by('x').asText() → mixed index with Mapping.TEXT",
         description="DSE text search index maps to a JanusGraph mixed index with Mapping.TEXT "
-                    "on an Elasticsearch/OpenSearch backend.",
+        "on an Elasticsearch/OpenSearch backend.",
         detection_hint="searchIndex.*asText",
         jg_equivalent="JanusGraph mixed index with Mapping.TEXT on Elasticsearch.",
         docs_link="https://docs.janusgraph.org/index-management/index-parameters/#text-search",
@@ -486,10 +481,7 @@ RULES: list[CompatibilityRule] = [
         detection_hint="searchIndex.*asString",
         jg_equivalent="JanusGraph mixed index with Mapping.STRING on Elasticsearch.",
         docs_link="https://docs.janusgraph.org/index-management/index-parameters/#string-search",
-        remediation=(
-            "searchIndex with asString() is automatically translated to a mixed index with "
-            "Mapping.STRING."
-        ),
+        remediation=("searchIndex with asString() is automatically translated to a mixed index with Mapping.STRING."),
     ),
     CompatibilityRule(
         rule_id="IX-006",
@@ -539,8 +531,7 @@ RULES: list[CompatibilityRule] = [
         category=Category.CONFIGURATION,
         severity=Severity.YELLOW,
         title="schema_mode = Development",
-        description="DSE Development schema mode auto-creates types. "
-                    "JanusGraph equivalent is schema.default=default.",
+        description="DSE Development schema mode auto-creates types. JanusGraph equivalent is schema.default=default.",
         detection_hint="schema_mode.*Development",
         jg_equivalent="schema.default=default in janusgraph.properties",
         docs_link="https://docs.janusgraph.org/basics/configuration-reference/#schema",
@@ -552,7 +543,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="schema_mode = Production",
         description="DSE Production schema mode enforces strict type checking. "
-                    "JanusGraph equivalent is schema.default=none.",
+        "JanusGraph equivalent is schema.default=none.",
         detection_hint="schema_mode.*Production",
         jg_equivalent="schema.default=none in janusgraph.properties",
         docs_link="https://docs.janusgraph.org/basics/configuration-reference/#schema",
@@ -563,8 +554,7 @@ RULES: list[CompatibilityRule] = [
         category=Category.CONFIGURATION,
         severity=Severity.YELLOW,
         title="allow_scan = true",
-        description="DSE allows full table scans when allow_scan is true. "
-                    "JanusGraph has no direct equivalent.",
+        description="DSE allows full table scans when allow_scan is true. JanusGraph has no direct equivalent.",
         detection_hint="allow_scan.*true",
         jg_equivalent="query.force-index=false in janusgraph.properties (allows full scans).",
         docs_link="https://docs.janusgraph.org/basics/configuration-reference/#query",
@@ -578,8 +568,7 @@ RULES: list[CompatibilityRule] = [
         category=Category.CONFIGURATION,
         severity=Severity.YELLOW,
         title="restrict_lambda = true",
-        description="DSE restricts Groovy lambda usage in traversals. "
-                    "JanusGraph allows lambdas by default.",
+        description="DSE restricts Groovy lambda usage in traversals. JanusGraph allows lambdas by default.",
         detection_hint="restrict_lambda.*true",
         jg_equivalent="evaluationTimeout in gremlin-server.yaml controls execution time.",
         docs_link="https://docs.janusgraph.org/basics/server/",
@@ -688,7 +677,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="repeat() step global semantics change (TinkerPop 3.4 → 3.7)",
         description="In TinkerPop 3.4 (DSE), repeat() had local semantics. "
-                    "TinkerPop 3.7+ (JanusGraph) uses global semantics by default.",
+        "TinkerPop 3.7+ (JanusGraph) uses global semantics by default.",
         detection_hint="\\.repeat\\(",
         jg_equivalent="Add explicit .until() guards.",
         docs_link="https://tinkerpop.apache.org/docs/current/upgrade/",
@@ -703,7 +692,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="valueMap() return format change",
         description="TinkerPop 3.5+ valueMap() returns Map<String, List> by default. "
-                    "Application code expecting flat values must be updated.",
+        "Application code expecting flat values must be updated.",
         detection_hint="\\.valueMap\\(",
         jg_equivalent="Add .by(unfold()) for flat single values.",
         docs_link="https://tinkerpop.apache.org/docs/current/reference/#valuemap-step",
@@ -717,14 +706,12 @@ RULES: list[CompatibilityRule] = [
         category=Category.TINKERPOP_DELTA,
         severity=Severity.YELLOW,
         title="scriptEvaluationTimeout renamed to evaluationTimeout",
-        description="TinkerPop 3.5+ renamed scriptEvaluationTimeout to evaluationTimeout "
-                    "in gremlin-server.yaml.",
+        description="TinkerPop 3.5+ renamed scriptEvaluationTimeout to evaluationTimeout in gremlin-server.yaml.",
         detection_hint="scriptEvaluationTimeout",
         jg_equivalent="evaluationTimeout in gremlin-server.yaml",
         docs_link="https://tinkerpop.apache.org/docs/current/reference/#_server_configuration",
         remediation=(
-            "Rename scriptEvaluationTimeout to evaluationTimeout in gremlin-server.yaml. "
-            "Value is in milliseconds."
+            "Rename scriptEvaluationTimeout to evaluationTimeout in gremlin-server.yaml. Value is in milliseconds."
         ),
     ),
     CompatibilityRule(
@@ -733,7 +720,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.GREEN,
         title="GraphBinary serialisation supported",
         description="JanusGraph 1.x supports GraphBinary serialisation (TinkerPop 3.4+). "
-                    "Update client driver to use it for improved performance.",
+        "Update client driver to use it for improved performance.",
         detection_hint="",
         jg_equivalent="GraphBinary serialiser in gremlin-python driver.",
         docs_link="https://tinkerpop.apache.org/docs/current/dev/io/#graphbinary",
@@ -764,12 +751,9 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="HCD AdvancedAuthenticator is enabled",
         description="HCD 2.x uses AdvancedAuthenticator (password auth required). "
-                    "JanusGraph must set storage.cql.username and storage.cql.password.",
+        "JanusGraph must set storage.cql.username and storage.cql.password.",
         detection_hint="AdvancedAuthenticator",
-        jg_equivalent=(
-            "storage.cql.username=cassandra, storage.cql.password=<password> "
-            "in janusgraph.properties"
-        ),
+        jg_equivalent=("storage.cql.username=cassandra, storage.cql.password=<password> in janusgraph.properties"),
         docs_link="https://docs.janusgraph.org/basics/configuration-reference/#storage-cql",
         remediation=(
             "Set storage.cql.username and storage.cql.password in janusgraph.properties. "
@@ -781,8 +765,7 @@ RULES: list[CompatibilityRule] = [
         category=Category.HCD_TARGET,
         severity=Severity.YELLOW,
         title="HCD materialized_views_enabled: false",
-        description="HCD 2.x has CQL materialized views disabled. "
-                    "JanusGraph does not use CQL MVs — no conflict.",
+        description="HCD 2.x has CQL materialized views disabled. JanusGraph does not use CQL MVs — no conflict.",
         detection_hint="materialized_views_enabled.*false",
         jg_equivalent="No action needed — JanusGraph does not create CQL MVs.",
         docs_link="https://docs.janusgraph.org/storage-backend/cassandra/",
@@ -797,7 +780,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="HCD guardrail defaults enforce batch-size limits",
         description="HCD hcd_guardrail_defaults=true enforces conservative batch-size limits. "
-                    "Do not enable atomic batch mutations.",
+        "Do not enable atomic batch mutations.",
         detection_hint="hcd_guardrail_defaults.*true",
         jg_equivalent="storage.cql.atomic-batch-mutate=false (must not be set to true)",
         docs_link="https://docs.janusgraph.org/basics/configuration-reference/#storage-cql",
@@ -812,7 +795,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="HCD storage_compatibility_mode: NONE (Cassandra 5+ SSTable formats)",
         description="HCD uses Cassandra 5+ SSTable formats. "
-                    "JanusGraph 1.x CQL driver (DataStax Java Driver 4.x) fully supports this.",
+        "JanusGraph 1.x CQL driver (DataStax Java Driver 4.x) fully supports this.",
         detection_hint="storage_compatibility_mode.*NONE",
         jg_equivalent="No action needed — JanusGraph 1.x CQL driver supports Cassandra 5 protocol.",
         docs_link="https://docs.janusgraph.org/storage-backend/cassandra/",
@@ -824,7 +807,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.YELLOW,
         title="HCD default_secondary_index: sai",
         description="HCD uses Storage-Attached Index (SAI) as the default secondary index. "
-                    "JanusGraph creates its own index tables; no conflict.",
+        "JanusGraph creates its own index tables; no conflict.",
         detection_hint="default_secondary_index.*sai",
         jg_equivalent="No action needed — JanusGraph manages its own index tables.",
         docs_link="https://docs.janusgraph.org/index-management/",
@@ -837,10 +820,7 @@ RULES: list[CompatibilityRule] = [
         title="HCD CQL port 9042, datacenter dc1",
         description="HCD CQL port 9042 and datacenter dc1 match JanusGraph defaults.",
         detection_hint="",
-        jg_equivalent=(
-            "storage.port=9042, storage.cql.local-datacenter=dc1 "
-            "— matches JanusGraph defaults."
-        ),
+        jg_equivalent=("storage.port=9042, storage.cql.local-datacenter=dc1 — matches JanusGraph defaults."),
         docs_link="https://docs.janusgraph.org/basics/configuration-reference/#storage-cql",
         remediation="No action needed. Fully compatible.",
     ),
@@ -864,7 +844,7 @@ RULES: list[CompatibilityRule] = [
         severity=Severity.RED,
         title="IBM Container Registry authentication required for HCD image",
         description="HCD image requires authentication with IBM Container Registry (cp.icr.io). "
-                    "docker login must succeed before docker compose up.",
+        "docker login must succeed before docker compose up.",
         detection_hint="",
         jg_equivalent="",
         docs_link="https://www.ibm.com/docs/en/hyper-converged-database",

@@ -64,22 +64,32 @@ def main() -> None:
 
 @main.command()
 @click.option(
-    "--source-gremlin-url", required=True,
+    "--source-gremlin-url",
+    required=True,
     help="WebSocket URL of the DSE Gremlin server to seed (ws://<host>:8182/gremlin)",
 )
 @click.option(
-    "--template", required=True,
+    "--template",
+    required=True,
     type=click.Choice(["food", "social", "iot", "enterprise"]),
     help="Built-in schema template to use.",
 )
-@click.option("--graph-name", default=None,
-              help="Name for the created graph. Defaults to the template name.")
-@click.option("--vertex-count", default=1_000, show_default=True,
-              help="Number of synthetic vertices to insert per primary vertex label.")
-@click.option("--edge-count", default=5_000, show_default=True,
-              help="Number of synthetic edges to insert per primary edge label.")
-@click.option("--confirm", is_flag=True, default=False,
-              help="Required: confirms you understand this writes data to the DSE cluster.")
+@click.option("--graph-name", default=None, help="Name for the created graph. Defaults to the template name.")
+@click.option(
+    "--vertex-count",
+    default=1_000,
+    show_default=True,
+    help="Number of synthetic vertices to insert per primary vertex label.",
+)
+@click.option(
+    "--edge-count", default=5_000, show_default=True, help="Number of synthetic edges to insert per primary edge label."
+)
+@click.option(
+    "--confirm",
+    is_flag=True,
+    default=False,
+    help="Required: confirms you understand this writes data to the DSE cluster.",
+)
 def seed(
     source_gremlin_url: str,
     template: str,
@@ -137,42 +147,66 @@ def seed(
 
 
 @main.command()
-@click.option("--source-gremlin-url", required=True,
-              help="WebSocket URL of the source DSE Gremlin server (ws://<host>:8182/gremlin)")
-@click.option("--source-cql-host", required=True,
-              help="CQL host of the source DSE cluster.")
+@click.option(
+    "--source-gremlin-url",
+    required=True,
+    help="WebSocket URL of the source DSE Gremlin server (ws://<host>:8182/gremlin)",
+)
+@click.option("--source-cql-host", required=True, help="CQL host of the source DSE cluster.")
 @click.option("--source-cql-port", default=9042, show_default=True)
 @click.option("--graph-name", required=True)
 @click.option("--output-dir", default=".", show_default=True)
-@click.option("--target-cql-host", default=None,
-              help="CQL host of the target HCD cluster. When provided, runs HCD pre-flight checks.")
+@click.option(
+    "--target-cql-host",
+    default=None,
+    help="CQL host of the target HCD cluster. When provided, runs HCD pre-flight checks.",
+)
 @click.option("--target-cql-port", default=9042, show_default=True)
 @click.option("--target-cql-username", default="cassandra", show_default=True)
-@click.option("--target-cql-password", default="cassandra", show_default=True,  # noqa: S106
-              hide_input=True)
 @click.option(
-    "--format", "output_formats",
+    "--target-cql-password",
+    default="cassandra",
+    show_default=True,  # noqa: S106
+    hide_input=True,
+)
+@click.option(
+    "--format",
+    "output_formats",
     type=click.Choice(["md", "json", "html", "all"]),
-    multiple=True, default=["all"], show_default=True,
+    multiple=True,
+    default=["all"],
+    show_default=True,
 )
 @click.option(
     "--filter-category",
-    type=click.Choice([
-        "query_pattern", "schema", "index", "configuration", "olap",
-        "security", "tinkerpop_delta", "data_type", "hcd_target", "all",
-    ]),
-    default="all", show_default=True,
+    type=click.Choice(
+        [
+            "query_pattern",
+            "schema",
+            "index",
+            "configuration",
+            "olap",
+            "security",
+            "tinkerpop_delta",
+            "data_type",
+            "hcd_target",
+            "all",
+        ]
+    ),
+    default="all",
+    show_default=True,
 )
 @click.option(
     "--filter-severity",
     type=click.Choice(["RED", "YELLOW", "GREEN", "all"]),
-    default="all", show_default=True,
+    default="all",
+    show_default=True,
 )
 @click.option("--username", default=None, help="DSE source authentication username.")
-@click.option("--password", default=None, hide_input=True,
-              help="DSE source authentication password.")
-@click.option("--skip-assessment-gate", is_flag=True, default=False,
-              help="Do not exit non-zero when risk is HIGH or CRITICAL.")
+@click.option("--password", default=None, hide_input=True, help="DSE source authentication password.")
+@click.option(
+    "--skip-assessment-gate", is_flag=True, default=False, help="Do not exit non-zero when risk is HIGH or CRITICAL."
+)
 def assess(
     source_gremlin_url: str,
     source_cql_host: str,
@@ -309,15 +343,22 @@ def analyse(
 
 @main.command()
 @click.option(
-    "--analysis", "analysis_path", required=True, type=click.Path(exists=True),
+    "--analysis",
+    "analysis_path",
+    required=True,
+    type=click.Path(exists=True),
     help="Path to <graph-name>-analysis.json produced by the analyse command.",
 )
 @click.option(
-    "--udt-strategy", type=click.Choice(["flat", "json"]), default="flat",
+    "--udt-strategy",
+    type=click.Choice(["flat", "json"]),
+    default="flat",
     help="UDT strategy: flat (default) explodes UDT fields; json serialises as JSON string.",
 )
 @click.option(
-    "--map-strategy", type=click.Choice(["flat", "json"]), default="flat",
+    "--map-strategy",
+    type=click.Choice(["flat", "json"]),
+    default="flat",
     help="mapOf() strategy: flat (default) produces parallel _key/_value LIST; json as JSON string.",
 )
 @click.option("--output-dir", default=".", show_default=True)
@@ -359,14 +400,18 @@ def translate(
 
 
 @main.command("init-target")
-@click.option("--target-gremlin-url", required=True,
-              help="WebSocket URL of the target JanusGraph Gremlin server.")
+@click.option("--target-gremlin-url", required=True, help="WebSocket URL of the target JanusGraph Gremlin server.")
 @click.option(
-    "--schema", "schema_path", required=True, type=click.Path(exists=True),
+    "--schema",
+    "schema_path",
+    required=True,
+    type=click.Path(exists=True),
     help="Path to <graph>-janusgraph-schema.json from the translate command.",
 )
 @click.option(
-    "--mode", type=click.Choice(["gremlin-script", "server-restart"]), default="gremlin-script",
+    "--mode",
+    type=click.Choice(["gremlin-script", "server-restart"]),
+    default="gremlin-script",
 )
 @click.option("--username", default=None)
 @click.option("--password", default=None, hide_input=True)
@@ -407,7 +452,10 @@ def init_target(
 
 @main.command()
 @click.option(
-    "--analysis", "analysis_path", required=True, type=click.Path(exists=True),
+    "--analysis",
+    "analysis_path",
+    required=True,
+    type=click.Path(exists=True),
 )
 @click.option("--source-gremlin-url", required=True)
 @click.option("--target-gremlin-url", required=True)
@@ -463,9 +511,7 @@ def migrate(
 
     total_v = sum(stats.get("vertices", {}).values())
     total_e = sum(stats.get("edges", {}).values())
-    console.print(
-        f"[green]✓[/green] Migration complete: {total_v:,} vertices, {total_e:,} edges"
-    )
+    console.print(f"[green]✓[/green] Migration complete: {total_v:,} vertices, {total_e:,} edges")
 
 
 # ---------------------------------------------------------------------------
@@ -544,17 +590,27 @@ def report(graph_name: str, output_dir: str) -> None:
 @click.option("--target-cql-host", default=None)
 @click.option("--target-cql-port", default=9042, show_default=True)
 @click.option("--target-cql-username", default="cassandra", show_default=True)
-@click.option("--target-cql-password", default="cassandra", show_default=True,  # noqa: S106
-              hide_input=True)
-@click.option("--output-dir", default=".", show_default=True)
-@click.option("--analyze-only", is_flag=True, default=False,
-              help="Run only assessment and analysis phases, then exit.")
-@click.option("--skip-assessment-gate", is_flag=True, default=False,
-              help="Proceed even if assessment risk is HIGH or CRITICAL.")
-@click.option("--seed", "do_seed", is_flag=True, default=False,
-              help="Seed the source DSE cluster before assessing. Requires --template.")
 @click.option(
-    "--template", default="food",
+    "--target-cql-password",
+    default="cassandra",
+    show_default=True,  # noqa: S106
+    hide_input=True,
+)
+@click.option("--output-dir", default=".", show_default=True)
+@click.option("--analyze-only", is_flag=True, default=False, help="Run only assessment and analysis phases, then exit.")
+@click.option(
+    "--skip-assessment-gate", is_flag=True, default=False, help="Proceed even if assessment risk is HIGH or CRITICAL."
+)
+@click.option(
+    "--seed",
+    "do_seed",
+    is_flag=True,
+    default=False,
+    help="Seed the source DSE cluster before assessing. Requires --template.",
+)
+@click.option(
+    "--template",
+    default="food",
     type=click.Choice(["food", "social", "iot", "enterprise"]),
     help="Template to use when --seed is set.",
 )
@@ -701,6 +757,4 @@ def run_all(  # noqa: PLR0913
 
     # 6. Report
     ctx.invoke(report, graph_name=graph_name, output_dir=output_dir)
-    console.print(
-        f"\n[bold green]✓ Migration pipeline complete for graph '{graph_name}'.[/bold green]"
-    )
+    console.print(f"\n[bold green]✓ Migration pipeline complete for graph '{graph_name}'.[/bold green]")

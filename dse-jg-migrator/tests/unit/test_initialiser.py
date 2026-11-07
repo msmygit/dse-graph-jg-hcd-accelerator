@@ -28,6 +28,7 @@ def _make_schema() -> dict:
 
 def test_initialiser_returns_ok_on_success(tmp_path) -> None:  # type: ignore[no-untyped-def]
     import json
+
     schema = _make_schema()
     schema_path = str(tmp_path / "schema.json")
     with open(schema_path, "w") as fh:
@@ -51,6 +52,7 @@ def test_initialiser_returns_ok_on_success(tmp_path) -> None:  # type: ignore[no
 
 def test_initialiser_records_errors_on_failure(tmp_path) -> None:  # type: ignore[no-untyped-def]
     import json
+
     schema = _make_schema()
     schema_path = str(tmp_path / "schema.json")
     with open(schema_path, "w") as fh:
@@ -76,6 +78,7 @@ def test_initialiser_records_errors_on_failure(tmp_path) -> None:  # type: ignor
 
 def test_server_restart_mode_skips_gremlin(tmp_path) -> None:  # type: ignore[no-untyped-def]
     import json
+
     schema = _make_schema()
     schema_path = str(tmp_path / "schema.json")
     with open(schema_path, "w") as fh:

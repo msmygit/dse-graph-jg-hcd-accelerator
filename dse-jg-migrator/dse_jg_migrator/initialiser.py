@@ -168,9 +168,7 @@ class Initialiser:
 
         Writes to: target JanusGraph — management rollback only (read-like).
         """
-        index_names = [
-            c.split(":")[1] for c in created if c.startswith("CompositeIndex:")
-        ]
+        index_names = [c.split(":")[1] for c in created if c.startswith("CompositeIndex:")]
         if not index_names:
             return
 

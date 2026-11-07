@@ -182,8 +182,13 @@ def test_low_risk_report_no_blockers_section(tmp_path: os.PathLike) -> None:
     result = _make_result("LOW")
     result.findings = [
         AssessmentFinding(
-            rule_id="HC-006", category="hcd_target", severity="GREEN",
-            title="Compatible", detail="OK", remediation="None", docs_link="L",
+            rule_id="HC-006",
+            category="hcd_target",
+            severity="GREEN",
+            title="Compatible",
+            detail="OK",
+            remediation="None",
+            docs_link="L",
         )
     ]
     result.summary = {"total_findings": 1, "by_severity": {"GREEN": 1, "RED": 0, "YELLOW": 0}, "by_category": {}}
