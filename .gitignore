@@ -1,4 +1,4 @@
-# ignore bdp and janusgraph
-./bdp
-./janusgraph
-./dse-docs-new
+# ignore bdp, dse-docs-new and janusgraph directories
+bdp
+janusgraph
+dse-docs-new
