@@ -42,6 +42,7 @@ docs/DSEGraph_Migration_Accelerator.md
 | Sub-Task 6 — Validator | `feat/st6-traversal-validator` |
 | Sub-Task 7 — CLI + Reports | `feat/st7-cli-reporter` |
 | Sub-Task 8 — Docker E2E | `feat/st8-docker-e2e` |
+| Sub-Task 9 — Sample Seeder | `feat/st9-sample-seeder` |
 | Bug fixes | `fix/<short-description>` |
 | Docs-only changes | `docs/<short-description>` |
 
@@ -557,13 +558,14 @@ Do not start a sub-task until all its prerequisites are merged to `main`.
 ```
 ST-1 (Scaffold) ── prerequisite for all other sub-tasks
 
-ST-1 → ST-0 (Assessor)
+ST-1 → ST-0 (Assessor)        [can run in parallel with ST-9]
 ST-1 → ST-2 (Analyser)
+ST-1 → ST-9 (Sample Seeder)   [independent of ST-0 through ST-8; can run in parallel with ST-0]
 ST-2 → ST-3 (Translator)
 ST-3 → ST-4 (Initialiser)
 ST-4 → ST-5 (Migrator)
 ST-5 → ST-6 (Validator)
-ST-0, ST-2, ST-3, ST-5, ST-6 → ST-7 (CLI + Reports)
+ST-0, ST-2, ST-3, ST-5, ST-6, ST-9 → ST-7 (CLI + Reports)
 ST-7 → ST-8 (Docker E2E)
 ```
 
@@ -593,3 +595,9 @@ When handing off to the next sub-task:
   from `assessor.py` or `compatibility_rules.py`.
 - **Do not** interpolate user-supplied or data-derived strings directly into Gremlin
   scripts or CQL queries. Always use bindings / prepared statements.
+- **Do not** invoke `seeder.py` without the `--confirm` flag or interactive `y` confirmation.
+  The seeder writes to the source cluster — it must never run silently or in a non-interactive
+  CI pipeline without an explicit override.
+- **Do not** use `seeder.py` against a production DSE cluster. It is a demo/dev tool only.
+  The `--source-gremlin-url` must resolve to a local Docker network address or a
+  clearly non-production host before the seeder is invoked.

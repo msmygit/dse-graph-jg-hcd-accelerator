@@ -1,7 +1,7 @@
 # DSE Graph → JanusGraph / HCD Migration Accelerator — Implementation Plan
 
 > **Status:** Pending implementation
-> **Goal:** Build a lightweight CLI tool that (0) runs a non-destructive pre-migration compatibility assessment, (1) analyses a live DSE Graph cluster, (2) generates a migration plan, and (3) executes the schema + data migration to JanusGraph with HCD as its CQL backend.
+> **Goal:** Build a lightweight CLI tool that (0) optionally seeds a DSE Graph cluster with a representative sample workload for demo/testing, (1) runs a non-destructive pre-migration compatibility assessment, (2) analyses a live DSE Graph cluster, (3) generates a migration plan, and (4) executes the schema + data migration to JanusGraph with HCD as its CQL backend.
 > **Sources:** `bdp/dse-graph/`, `dse-docs-new/modules/graph/`, `janusgraph/`, project structure exploration (November 2026).
 
 ---
@@ -20,12 +20,13 @@
 11. [Sub-Task 6 — Traversal Validator](#sub-task-6--traversal-validator)
 12. [Sub-Task 7 — CLI Wrapper and Report Generator](#sub-task-7--cli-wrapper-and-report-generator)
 13. [Sub-Task 8 — Docker / Compose Integration and E2E Test](#sub-task-8--docker--compose-integration-and-e2e-test)
-14. [Appendix A — Data Type Mapping Table](#appendix-a--data-type-mapping-table)
-15. [Appendix B — Index Type Mapping Table](#appendix-b--index-type-mapping-table)
-16. [Appendix C — DSE Graph Schema Syntax Reference](#appendix-c--dse-graph-schema-syntax-reference)
-17. [Appendix D — JanusGraph JSON Schema Format](#appendix-d--janusgraph-json-schema-format)
-18. [Appendix E — Known Gaps and Caveats](#appendix-e--known-gaps-and-caveats)
-19. [Appendix F — Compatibility Assessment Rule Catalogue](#appendix-f--compatibility-assessment-rule-catalogue)
+14. [Sub-Task 9 — Sample Workload Seeder](#sub-task-9--sample-workload-seeder)
+15. [Appendix A — Data Type Mapping Table](#appendix-a--data-type-mapping-table)
+16. [Appendix B — Index Type Mapping Table](#appendix-b--index-type-mapping-table)
+17. [Appendix C — DSE Graph Schema Syntax Reference](#appendix-c--dse-graph-schema-syntax-reference)
+18. [Appendix D — JanusGraph JSON Schema Format](#appendix-d--janusgraph-json-schema-format)
+19. [Appendix E — Known Gaps and Caveats](#appendix-e--known-gaps-and-caveats)
+20. [Appendix F — Compatibility Assessment Rule Catalogue](#appendix-f--compatibility-assessment-rule-catalogue)
 
 ---
 
@@ -52,6 +53,7 @@ Both engines use [Apache TinkerPop 3.x](https://tinkerpop.apache.org/) as the Gr
 ## 2. Scope
 
 ### In scope
+- **Seed** (optional, write — requires explicit confirmation) a running DSE Graph instance with a named sample workload template (`food`, `social`, `iot`, `enterprise`) so users without an existing graph can evaluate and test the migration tool.
 - **Assess** (read-only, non-destructive) a running DSE Graph cluster — query patterns, schema, configuration, OLAP usage, security features — and produce a structured compatibility report before any migration action.
 - **Analyse** a running DSE Graph cluster (Classic or DSG) via Gremlin + CQL connections.
 - **Extract** all schema elements: vertex labels, edge labels, property keys, UDTs, all index types, graph-level configuration.
@@ -74,8 +76,16 @@ Both engines use [Apache TinkerPop 3.x](https://tinkerpop.apache.org/) as the Gr
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                   dse-jg-migrator CLI                   │
-│                     (Python 3.11+)                      │
+│                     (Python 3.12+)                      │
 └───────────┬─────────────────────────────────────────────┘
+            │
+   ┌────────▼────────────────────────────────────────┐
+   │  STEP 9 — Sample Workload Seeder  (seed cmd)    │◀── OPTIONAL / demo only
+   │  writes sample graph to DSE (requires --confirm)│
+   │  templates: food | social | iot | enterprise    │
+   └────────┬────────────────────────────────────────┘
+            │ seeded DSE Graph cluster
+            │ (skip if you already have a graph)
             │
    ┌────────▼────────────────────────────────────────┐
    │  STEP 0 — Compatibility Assessor  (assess cmd)  │◀── --analyze-only flag
@@ -115,7 +125,7 @@ Both engines use [Apache TinkerPop 3.x](https://tinkerpop.apache.org/) as the Gr
 ```
 
 **Technology choices (minimal dependencies):**
-- **Python 3.11+** — widely available, no JVM required for the tool itself.
+- **Python 3.12+** — widely available, no JVM required for the tool itself.
 - **`gremlinpython`** (`apache-tinkerpop-gremlin-python`) — official TinkerPop Python driver; connects to both DSE Gremlin server and JanusGraph Gremlin server over WebSocket.
 - **`cassandra-driver`** (`cassandra-driver`) — for CQL introspection of DSG keyspaces and paginated bulk reads.
 - **`click`** — lightweight CLI framework.
@@ -1021,13 +1031,14 @@ Create the Python project structure, dependency manifest, and development enviro
    ```
    dse-jg-migrator/
    ├── pyproject.toml
+   ├── CHANGELOG.md
    ├── README.md
    ├── dse_jg_migrator/
    │   ├── __init__.py
    │   ├── cli.py                    # Click entry point
-   │   ├── assessor.py               # NEW: Pre-migration compatibility engine
-   │   ├── compatibility_rules.py    # NEW: Static rule catalogue (GREEN/YELLOW/RED)
-   │   ├── assessment_reporter.py    # NEW: MD / JSON / HTML report renderer
+   │   ├── assessor.py               # Pre-migration compatibility engine (READ-ONLY)
+   │   ├── compatibility_rules.py    # Static rule catalogue (GREEN/YELLOW/RED)
+   │   ├── assessment_reporter.py    # MD / JSON / HTML report renderer
    │   ├── analyser.py               # DSE Graph introspection
    │   ├── translator.py             # Schema mapping logic
    │   ├── initialiser.py            # JanusGraph target setup
@@ -1035,18 +1046,33 @@ Create the Python project structure, dependency manifest, and development enviro
    │   ├── validator.py              # Post-migration checks
    │   ├── reporter.py               # Migration report generation
    │   ├── models.py                 # Dataclasses for schema elements
-   │   └── config.py                 # Configuration dataclasses
+   │   ├── config.py                 # Configuration dataclasses
+   │   ├── seeder.py                 # NEW (ST-9): Sample workload seeder
+   │   └── seed_templates/           # NEW (ST-9): Built-in Gremlin template files
+   │       ├── food.groovy
+   │       ├── social.groovy
+   │       ├── iot.groovy
+   │       └── enterprise.groovy
    ├── tests/
-   │   ├── test_assessor.py          # NEW
-   │   ├── test_compatibility_rules.py  # NEW
-   │   ├── test_analyser.py
-   │   ├── test_translator.py
-   │   └── test_models.py
+   │   ├── unit/
+   │   │   ├── test_assessor.py
+   │   │   ├── test_compatibility_rules.py
+   │   │   ├── test_assessment_reporter.py
+   │   │   ├── test_analyser.py
+   │   │   ├── test_translator.py
+   │   │   ├── test_initialiser.py
+   │   │   ├── test_migrator.py
+   │   │   ├── test_validator.py
+   │   │   ├── test_seeder.py        # NEW (ST-9)
+   │   │   └── test_models.py
+   │   ├── fixtures/
+   │   └── e2e/
+   │       └── test_e2e.py
    └── examples/
-       ├── food-graph-schema.json         # Example extracted schema
-       ├── food-assessment-report.md      # NEW: Example assessment output
-       ├── food-assessment-report.json    # NEW: Machine-parseable assessment
-       └── janusgraph-target.json         # Example translated schema
+       ├── food-graph-schema.json
+       ├── food-assessment-report.md
+       ├── food-assessment-report.json
+       └── janusgraph-target.json
    ```
 2. Write `pyproject.toml`:
    ```toml
@@ -1057,7 +1083,7 @@ Create the Python project structure, dependency manifest, and development enviro
    [project]
    name = "dse-jg-migrator"
    version = "0.1.0"
-   requires-python = ">=3.11"
+   requires-python = ">=3.12"
    dependencies = [
        "click>=8.1",
        "gremlinpython>=3.7.0",
@@ -1071,7 +1097,7 @@ Create the Python project structure, dependency manifest, and development enviro
    ```
 3. Define `models.py` dataclasses (see [Sub-Task 2](#sub-task-2--dse-graph-analyser) for field inventory).
 4. Define `config.py` connection configuration dataclasses.
-5. Implement stub `cli.py` with top-level command groups: `analyse`, `translate`, `migrate`, `validate`, `report`.
+5. Implement stub `cli.py` with top-level command groups: `seed`, `assess`, `analyse`, `translate`, `init-target`, `migrate`, `validate`, `report`, `run-all`.
 
 ### Relevant Context
 - No existing Python code in the repo; this is greenfield.
@@ -2205,6 +2231,574 @@ docker login cp.icr.io --username cp
 - DSE 6.9 image: `datastax/dse-server:6.9.26-ubi` (if testing DSG against a 6.9 source)
 
 ---
+
+## Sub-Task 9 — Sample Workload Seeder
+
+**Status:** `[ ] pending`
+
+> **⚠️ This sub-task writes data to the source DSE Graph cluster.**
+> It is a **developer / demo utility only** and must never be run against a production DSE cluster.
+> All writes are gated behind an explicit `--confirm` flag or an interactive prompt.
+> The seeder is idempotent — running it twice produces the same result.
+
+### Intent
+
+Enable operators who have no existing DSE Graph workload to spin up a representative sample graph with a single command. The seeder creates a named graph (using `system.graph().ifNotExists()`) and loads schema + synthetic data from a built-in Gremlin template, giving them a realistic source to run `assess` and `run-all` against immediately.
+
+This makes the full migration workflow self-contained and demonstrable from a completely clean slate:
+```
+docker compose -f docker/docker-compose-e2e.yml up -d
+dse-jg-migrator seed   --source-gremlin-url ws://localhost:8183/gremlin --template food --confirm
+dse-jg-migrator assess --source-gremlin-url ws://localhost:8183/gremlin \
+                        --source-cql-host localhost --source-cql-port 9043 \
+                        --target-cql-host localhost  --target-cql-port 9042 \
+                        --graph-name food
+dse-jg-migrator run-all ...
+```
+
+### Expected Outcomes
+
+- `dse-jg-migrator seed --source-gremlin-url <url> --template <name> --graph-name <g> --confirm` creates the graph, schema, and synthetic data on the target DSE cluster.
+- `--vertex-count` and `--edge-count` control how many synthetic records are inserted per label (defaults: 1,000 vertices, 5,000 edges).
+- Running the command twice is safe — `ifNotExists()` guards on all schema elements prevent duplicates; data insert is skipped if vertex count already meets the target.
+- After seeding, the command prints the exact `assess` invocation to run next.
+- All four templates seed without error against DSE 6.8 (`datastax/dse-server:6.8.65-ubi7`) and DSE 6.9 (`datastax/dse-server:6.9.26-ubi`).
+
+### Template Catalogue
+
+Each template is stored as a Gremlin/Groovy file in `dse_jg_migrator/seed_templates/` and packaged with the module via `package_data` in `pyproject.toml`. Templates are intentionally designed to cover different migration challenge areas:
+
+| Template | Graph Name | What it exercises |
+|----------|------------|------------------|
+| `food` | `food` | Partition keys (`Uuid`), MV indexes, `searchIndex` (text + geo `Point`), `setOf(Text)`, `mapOf(Text, Date)`, edge properties |
+| `social` | `social` | Classic-style vertex properties, `listOf(Text)`, vertex-centric (edge) index, inverse MV on edge label, `Timestamp` type |
+| `iot` | `iot` | High-cardinality `Bigint` + `Timestamp` time-series edges, composite indexes on multiple keys, `Double` + `Float` sensor readings |
+| `enterprise` | `enterprise` | UDTs (`frozen(typeOf(...))`), `tupleOf(...)`, OLAP traversal source enabled (`GraphOLAPEnabled`), RLAC marker — deliberately triggers RED findings in `assess` so operators can see what a HIGH-risk assessment looks like |
+
+### Todo List
+
+#### Step 9.1 — Implement `seeder.py`
+
+```python
+# seeder.py
+# NOTE: This module WRITES to the source DSE cluster.
+# It is a demo/dev utility only. Never run against production.
+
+from importlib import resources
+from pathlib import Path
+import re
+from gremlin_python.driver import client as gremlin_client
+from dse_jg_migrator.models import SeederResult
+
+TEMPLATES = {"food", "social", "iot", "enterprise"}
+
+class Seeder:
+    """
+    Creates a named DSE Graph and loads schema + synthetic data from
+    a built-in Gremlin template.
+
+    Connects to: source DSE Gremlin server (WRITE operations).
+    Idempotent: all schema uses ifNotExists(); data insert skips if
+    vertex count already meets --vertex-count target.
+    """
+
+    def __init__(
+        self,
+        gremlin_url: str,
+        template: str,
+        graph_name: str,
+        vertex_count: int = 1_000,
+        edge_count: int = 5_000,
+    ):
+        if template not in TEMPLATES:
+            raise ValueError(f"Unknown template '{template}'. Choose from: {sorted(TEMPLATES)}")
+        self.gremlin_url  = gremlin_url
+        self.template     = template
+        self.graph_name   = graph_name
+        self.vertex_count = vertex_count
+        self.edge_count   = edge_count
+
+    def run(self) -> SeederResult:
+        """Execute the seed. Returns a SeederResult with counts and next-step hints."""
+        groovy = self._load_template()
+        groovy = self._render_params(groovy)
+        c = gremlin_client.Client(self.gremlin_url, "g")
+        try:
+            for statement in self._split_statements(groovy):
+                c.submit(statement).all().result()
+        finally:
+            c.close()
+        return SeederResult(
+            graph_name=self.graph_name,
+            template=self.template,
+            vertex_count=self.vertex_count,
+            edge_count=self.edge_count,
+            next_command=self._build_assess_hint(),
+        )
+
+    def _load_template(self) -> str:
+        """Load the .groovy template from the package's seed_templates/ directory."""
+        pkg = resources.files("dse_jg_migrator.seed_templates")
+        return (pkg / f"{self.template}.groovy").read_text(encoding="utf-8")
+
+    def _render_params(self, groovy: str) -> str:
+        """
+        Replace known tokens in the template.
+        Substitution is on a fixed allow-list of tokens — no arbitrary user
+        input is interpolated into Groovy to prevent code injection.
+        """
+        replacements = {
+            "{{GRAPH_NAME}}":   self.graph_name,
+            "{{VERTEX_COUNT}}": str(self.vertex_count),
+            "{{EDGE_COUNT}}":   str(self.edge_count),
+        }
+        for token, value in replacements.items():
+            # Validate values: graph name must be alphanumeric + underscore only
+            if token == "{{GRAPH_NAME}}" and not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*", value):
+                raise ValueError(f"Graph name '{value}' must match [a-zA-Z][a-zA-Z0-9_]*")
+            groovy = groovy.replace(token, value)
+        return groovy
+
+    @staticmethod
+    def _split_statements(groovy: str) -> list[str]:
+        """
+        Split multi-statement Gremlin scripts at blank lines between
+        top-level statements. Each statement is submitted as a separate
+        Gremlin request to avoid Gremlin server timeout on large scripts.
+        """
+        return [s.strip() for s in groovy.split("\n\n") if s.strip()]
+
+    def _build_assess_hint(self) -> str:
+        return (
+            f"dse-jg-migrator assess "
+            f"--source-gremlin-url {self.gremlin_url} "
+            f"--graph-name {self.graph_name}"
+        )
+```
+
+#### Step 9.2 — Write the four template files
+
+Each template file lives at `dse_jg_migrator/seed_templates/<name>.groovy` and uses three substitution tokens: `{{GRAPH_NAME}}`, `{{VERTEX_COUNT}}`, `{{EDGE_COUNT}}`.
+
+**`food.groovy`** — exercises the widest range of automated migration patterns:
+
+```groovy
+// Template: food
+// Covers: Uuid partition key, MV index, searchIndex (text + string),
+//         setOf, mapOf, geo Point, edge properties.
+// Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}
+
+system.graph('{{GRAPH_NAME}}').ifNotExists()
+  .withReplication("{'class':'SimpleStrategy','replication_factor':1}")
+  .andDurableWrites(true).create()
+
+schema = {{GRAPH_NAME}}.schema()
+
+schema.vertexLabel('person').ifNotExists()
+  .partitionBy('person_id', Uuid)
+  .property('name', Text)
+  .property('age', Int)
+  .property('nickname', setOf(Text))
+  .property('badge', mapOf(Text, Date))
+  .create()
+
+schema.vertexLabel('recipe').ifNotExists()
+  .partitionBy('recipe_id', Uuid)
+  .property('name', Text)
+  .property('instructions', Text)
+  .property('cuisine', Text)
+  .property('tags', setOf(Text))
+  .create()
+
+schema.vertexLabel('location').ifNotExists()
+  .partitionBy('location_id', Uuid)
+  .property('name', Text)
+  .property('geo_point', Point)
+  .create()
+
+schema.edgeLabel('created').ifNotExists()
+  .from('person').to('recipe').property('created_on', Date).create()
+
+schema.edgeLabel('knows').ifNotExists()
+  .from('person').to('person').property('since', Date).create()
+
+schema.edgeLabel('located_at').ifNotExists()
+  .from('person').to('location').create()
+
+schema.vertexLabel('person').materializedView('person_by_name').ifNotExists()
+  .partitionBy('name').clusterBy('person_id', Asc).create()
+
+schema.vertexLabel('recipe').searchIndex().ifNotExists()
+  .by('instructions').asText().by('cuisine').asString().create()
+
+schema.vertexLabel('location').searchIndex().ifNotExists()
+  .by('geo_point').create()
+
+schema.edgeLabel('knows').from('person').to('person')
+  .materializedView('knows_by_since').ifNotExists()
+  .partitionBy(OUT, 'person_id').clusterBy('since', Asc)
+  .clusterBy(IN, 'person_id', Asc).create()
+
+g = {{GRAPH_NAME}}.traversal()
+
+{{VERTEX_COUNT}}.times {
+  g.addV('person')
+    .property('person_id', UUID.randomUUID())
+    .property('name', "Person_${it}")
+    .property('age', (int)(Math.random() * 60 + 20))
+    .iterate()
+}
+
+recipeCount = Math.min({{VERTEX_COUNT}}, 500)
+recipeCount.times {
+  g.addV('recipe')
+    .property('recipe_id', UUID.randomUUID())
+    .property('name', "Recipe_${it}")
+    .property('instructions', "Step 1: Prepare ingredients for recipe ${it}. Step 2: Cook.")
+    .property('cuisine', ['Italian','French','Japanese','Mexican','Indian'].get((int)(Math.random()*5)))
+    .iterate()
+}
+
+people  = g.V().hasLabel('person').limit({{EDGE_COUNT}}).toList()
+recipes = g.V().hasLabel('recipe').toList()
+people.eachWithIndex { p, i ->
+  r = recipes.get((int)(Math.random() * recipes.size()))
+  g.addE('created').from(p).to(r).property('created_on', new Date()).iterate()
+  if (i + 1 < people.size()) {
+    g.addE('knows').from(p).to(people.get(i + 1))
+      .property('since', new Date()).iterate()
+  }
+}
+```
+
+**`social.groovy`** — exercises `listOf`, vertex-centric index, inverse MV edge, `Timestamp`:
+
+```groovy
+// Template: social
+// Covers: listOf, Timestamp, vertex-centric (RelationIndex), inverse MV edge.
+// Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}
+
+system.graph('{{GRAPH_NAME}}').ifNotExists()
+  .withReplication("{'class':'SimpleStrategy','replication_factor':1}")
+  .andDurableWrites(true).create()
+
+schema = {{GRAPH_NAME}}.schema()
+
+schema.vertexLabel('user').ifNotExists()
+  .partitionBy('user_id', Uuid)
+  .property('username', Text)
+  .property('email', Text)
+  .property('roles', listOf(Text))
+  .property('joined_at', Timestamp)
+  .create()
+
+schema.vertexLabel('post').ifNotExists()
+  .partitionBy('post_id', Uuid)
+  .property('content', Text)
+  .property('created_at', Timestamp)
+  .create()
+
+schema.edgeLabel('follows').ifNotExists()
+  .from('user').to('user').property('followed_at', Timestamp).create()
+
+schema.edgeLabel('authored').ifNotExists()
+  .from('user').to('post').property('published_at', Timestamp).create()
+
+schema.vertexLabel('user').materializedView('user_by_username').ifNotExists()
+  .partitionBy('username').clusterBy('user_id', Asc).create()
+
+schema.edgeLabel('follows').from('user').to('user')
+  .materializedView('follows_inverse').ifNotExists().inverse().create()
+
+schema.edgeLabel('follows').from('user').to('user')
+  .materializedView('follows_by_date').ifNotExists()
+  .partitionBy(OUT, 'user_id')
+  .clusterBy('followed_at', Desc).clusterBy(IN, 'user_id', Asc).create()
+
+g = {{GRAPH_NAME}}.traversal()
+
+{{VERTEX_COUNT}}.times {
+  g.addV('user')
+    .property('user_id', UUID.randomUUID())
+    .property('username', "user_${it}")
+    .property('email', "user${it}@example.com")
+    .property('joined_at', new Date())
+    .iterate()
+}
+
+users = g.V().hasLabel('user').limit({{EDGE_COUNT}}).toList()
+users.eachWithIndex { u, i ->
+  if (i + 1 < users.size()) {
+    g.addE('follows').from(u).to(users.get(i + 1))
+      .property('followed_at', new Date()).iterate()
+  }
+}
+```
+
+**`iot.groovy`** — exercises `Bigint`, `Double`, `Float`, composite multi-key indexes, `Timestamp`:
+
+```groovy
+// Template: iot
+// Covers: Bigint, Double, Float, Timestamp, composite multi-key index.
+// Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}
+
+system.graph('{{GRAPH_NAME}}').ifNotExists()
+  .withReplication("{'class':'SimpleStrategy','replication_factor':1}")
+  .andDurableWrites(true).create()
+
+schema = {{GRAPH_NAME}}.schema()
+
+schema.vertexLabel('device').ifNotExists()
+  .partitionBy('device_id', Uuid)
+  .property('name', Text)
+  .property('type', Text)
+  .property('firmware_version', Text)
+  .create()
+
+schema.vertexLabel('reading').ifNotExists()
+  .partitionBy('device_id', Uuid)
+  .clusterBy('ts', Timestamp, Desc)
+  .property('sensor_value', Double)
+  .property('raw_value', Bigint)
+  .property('quality', Float)
+  .create()
+
+schema.edgeLabel('produced').ifNotExists()
+  .from('device').to('reading').create()
+
+schema.vertexLabel('reading').materializedView('reading_by_quality').ifNotExists()
+  .partitionBy('device_id').clusterBy('quality', Desc).clusterBy('ts', Desc).create()
+
+schema.vertexLabel('device').secondaryIndex('device_by_type').ifNotExists()
+  .by('type').create()
+
+g = {{GRAPH_NAME}}.traversal()
+
+{{VERTEX_COUNT}}.times {
+  g.addV('device')
+    .property('device_id', UUID.randomUUID())
+    .property('name', "Device_${it}")
+    .property('type', ['temperature','pressure','humidity','vibration'].get((int)(Math.random()*4)))
+    .property('firmware_version', "1.${(int)(Math.random()*10)}.0")
+    .iterate()
+}
+
+devices = g.V().hasLabel('device').toList()
+{{EDGE_COUNT}}.times {
+  d = devices.get((int)(Math.random() * devices.size()))
+  r = g.addV('reading')
+    .property('device_id', g.V(d).values('device_id').next())
+    .property('ts', new Date())
+    .property('sensor_value', Math.random() * 100)
+    .property('raw_value', (long)(Math.random() * Long.MAX_VALUE))
+    .property('quality', (float)(Math.random()))
+    .next()
+  g.addE('produced').from(d).to(r).iterate()
+}
+```
+
+**`enterprise.groovy`** — deliberately triggers RED findings (RLAC, OLAP, UDT, `tupleOf`):
+
+```groovy
+// Template: enterprise
+// Purpose: DELIBERATELY triggers RED findings in assess output so operators
+//          can see what a HIGH/CRITICAL risk assessment looks like.
+// Covers: UDT (frozen typeOf), tupleOf, OLAP source, RLAC marker.
+// Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}
+
+system.graph('{{GRAPH_NAME}}').ifNotExists()
+  .withReplication("{'class':'SimpleStrategy','replication_factor':1}")
+  .andDurableWrites(true).create()
+
+schema = {{GRAPH_NAME}}.schema()
+
+// UDT definition (triggers SC-005 RED)
+schema.type('address').ifNotExists()
+  .property('street', Text)
+  .property('city', Text)
+  .property('zip', Text)
+  .create()
+
+schema.vertexLabel('employee').ifNotExists()
+  .partitionBy('employee_id', Uuid)
+  .property('name', Text)
+  .property('dept', Text)
+  .property('salary_range', tupleOf(Int, Int))        // triggers SC-006 YELLOW
+  .property('home_address', frozen(typeOf('address'))) // triggers SC-005 RED
+  .create()
+
+schema.vertexLabel('project').ifNotExists()
+  .partitionBy('project_id', Uuid)
+  .property('name', Text)
+  .property('location', Point)
+  .create()
+
+schema.edgeLabel('works_on').ifNotExists()
+  .from('employee').to('project')
+  .property('since', Date)
+  .property('role', Text)
+  .create()
+
+schema.vertexLabel('project').searchIndex().ifNotExists()
+  .by('name').asText()
+  .by('location').create()  // geo Point searchIndex — triggers SC-008/IX-006 YELLOW
+
+// NOTE: RLAC and OLAP enablement are cluster-level and cannot be set via schema DSL.
+// The assess command detects OLAP by probing the 'a' traversal source.
+// The enterprise template's presence of these patterns is documented in the
+// assessment report to help operators understand what RED findings look like.
+
+g = {{GRAPH_NAME}}.traversal()
+
+{{VERTEX_COUNT}}.times {
+  g.addV('employee')
+    .property('employee_id', UUID.randomUUID())
+    .property('name', "Employee_${it}")
+    .property('dept', ['Engineering','Finance','Legal','Operations'].get((int)(Math.random()*4)))
+    .iterate()
+}
+
+projectCount = Math.min({{VERTEX_COUNT}} / 10, 100) as int
+projectCount.times {
+  g.addV('project')
+    .property('project_id', UUID.randomUUID())
+    .property('name', "Project_${it}")
+    .iterate()
+}
+
+employees = g.V().hasLabel('employee').limit({{EDGE_COUNT}}).toList()
+projects  = g.V().hasLabel('project').toList()
+employees.each { e ->
+  p = projects.get((int)(Math.random() * projects.size()))
+  g.addE('works_on').from(e).to(p)
+    .property('since', new Date())
+    .property('role', ['lead','contributor','reviewer'].get((int)(Math.random()*3)))
+    .iterate()
+}
+```
+
+#### Step 9.3 — Wire the `seed` CLI command
+
+```python
+# In cli.py
+
+@main.command()
+@click.option('--source-gremlin-url', required=True,
+              help='WebSocket URL of the DSE Gremlin server to seed (ws://<host>:8182/gremlin)')
+@click.option('--template', required=True,
+              type=click.Choice(['food', 'social', 'iot', 'enterprise']),
+              help='Built-in schema template to use.')
+@click.option('--graph-name', default=None,
+              help='Name for the created graph. Defaults to the template name.')
+@click.option('--vertex-count', default=1_000, show_default=True,
+              help='Number of synthetic vertices to insert per primary vertex label.')
+@click.option('--edge-count', default=5_000, show_default=True,
+              help='Number of synthetic edges to insert per primary edge label.')
+@click.option('--confirm', is_flag=True, default=False,
+              help='Required: confirms you understand this writes data to the DSE cluster.')
+def seed(source_gremlin_url, template, graph_name, vertex_count, edge_count, confirm):
+    """
+    Seed a DSE Graph cluster with a built-in sample workload.
+
+    ⚠ WRITES DATA to the source DSE cluster. For demo and development use only.
+    Never run against a production cluster.
+
+    The graph is created with ifNotExists() — safe to run multiple times.
+
+    Examples:
+      dse-jg-migrator seed --source-gremlin-url ws://localhost:8183/gremlin \\
+                           --template food --confirm
+
+      dse-jg-migrator seed --source-gremlin-url ws://localhost:8183/gremlin \\
+                           --template enterprise --graph-name demo_enterprise \\
+                           --vertex-count 500 --confirm
+    """
+    if not confirm:
+        console.print(
+            "[yellow]⚠ This command writes data to the DSE cluster.[/yellow]\n"
+            "Add [bold]--confirm[/bold] to proceed, or press [bold]y[/bold] to continue."
+        )
+        if not click.confirm("Proceed with seeding?"):
+            raise SystemExit(0)
+
+    resolved_name = graph_name or template
+    from .seeder import Seeder
+    seeder = Seeder(
+        gremlin_url=source_gremlin_url,
+        template=template,
+        graph_name=resolved_name,
+        vertex_count=vertex_count,
+        edge_count=edge_count,
+    )
+    with console.status(f"Seeding '{resolved_name}' graph using '{template}' template..."):
+        result = seeder.run()
+
+    console.print(f"[green]✓[/green] Graph [bold]{result.graph_name}[/bold] seeded successfully.")
+    console.print(f"  Vertices: ~{result.vertex_count:,}  |  Edges: ~{result.edge_count:,}")
+    console.print(f"\n[bold]Next step:[/bold]")
+    console.print(f"  {result.next_command}")
+```
+
+Also add `--seed` and `--template` flags to `run-all` so a full zero-to-migration demo is one command:
+
+```python
+@main.command('run-all')
+@click.option('--seed', 'do_seed', is_flag=True, default=False,
+              help='Seed the source DSE cluster before assessing. Requires --template.')
+@click.option('--template', default='food',
+              type=click.Choice(['food', 'social', 'iot', 'enterprise']),
+              help='Template to use when --seed is set. Default: food.')
+@click.option('--analyze-only', is_flag=True, default=False,
+              help='Run only seed (if --seed) and assessment, then exit.')
+@click.option('--skip-assessment-gate', is_flag=True, default=False,
+              help='Proceed with migration even if assessment risk is HIGH or CRITICAL.')
+@click.pass_context
+def run_all(ctx, do_seed, template, analyze_only, skip_assessment_gate, **kwargs):
+    """
+    Run the full migration pipeline.
+
+    Optional zero-to-migration demo (clean slate, no existing graph):
+      dse-jg-migrator run-all --seed --template food --analyze-only ...
+    """
+    if do_seed:
+        ctx.invoke(seed, template=template, confirm=True, ...)
+
+    ctx.invoke(assess, ...)
+
+    if analyze_only:
+        return
+    # ... rest of pipeline
+```
+
+#### Step 9.4 — Unit tests (`tests/unit/test_seeder.py`)
+
+1. Test `_render_params` — assert all three tokens are replaced correctly.
+2. Test `_render_params` with an invalid graph name — assert `ValueError` is raised.
+3. Test `_split_statements` — assert a multi-block Groovy string is split correctly at blank lines.
+4. Test `Seeder.run()` with a mock Gremlin client — assert the correct number of `submit()` calls are made and the returned `SeederResult` has the expected field values.
+5. Test that `seed` CLI command exits 0 with `--confirm` and exits 0 without `--confirm` when the interactive prompt receives `y`.
+6. Test that `seed` CLI command exits 0 without `--confirm` when the interactive prompt receives `n` (no data submitted).
+
+#### Step 9.5 — `pyproject.toml` update
+
+Add `seed_templates/` to the package data so the `.groovy` files are included in the installed package:
+
+```toml
+[tool.setuptools.package-data]
+dse_jg_migrator = ["seed_templates/*.groovy"]
+```
+
+### Relevant Context
+- Sub-Task 8's `docker/seed_dse.groovy` is the existing one-off Docker seed script — it is superseded by the `food.groovy` template in this sub-task for programmatic use. The Docker script may be retained as a standalone reference.
+- Sub-Task 9 requires only Sub-Task 1 (Scaffold) to be complete. It has no dependency on Sub-Tasks 2–8 and can be developed in parallel with Sub-Task 0.
+- The `enterprise` template intentionally seeds a graph that will produce HIGH-risk assessment findings. This is by design — it gives operators a concrete example of what RED findings look like before they try the tool on their real workload.
+- Graph name validation (`[a-zA-Z][a-zA-Z0-9_]*`) matches DSE Graph's own naming constraint.
+
+### Branch
+`feat/st9-sample-seeder`
+
+---
+
 
 ## Appendix A — Data Type Mapping Table
 
