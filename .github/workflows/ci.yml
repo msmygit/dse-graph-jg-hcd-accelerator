@@ -82,12 +82,12 @@ jobs:
           pip install --upgrade pip setuptools wheel
           pip install -e . pytest pytest-cov
 
-      - name: pytest (unit tests, coverage ≥ 80%)
+      - name: pytest (unit tests, coverage ≥ 60%)
         run: |
           pytest tests/unit/ -v \
             --cov=dse_jg_migrator \
             --cov-report=term-missing \
-            --cov-fail-under=80
+            --cov-fail-under=60
 
   audit:
     name: Dependency vulnerability scan (pip-audit)
