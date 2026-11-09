@@ -93,6 +93,12 @@ flowchart TD
   and tuples *before* any generic "tuple → list" conversion, or a UDT becomes repeated values of one key.
 - **A request the server cannot decode is never answered** (Netty `DecoderException` with no request id), so every
   `.result()` needs a timeout or the client blocks forever.
+- **A failed connect leaks the transport.** gremlin-python creates an `AiohttpTransport` (with its own event loop) per
+  connection; if `connect` raises, nothing closes it, and GC later runs its `close()` inside another loop
+  (`RuntimeError: Cannot run the event loop while another loop is running`). `gremlin_io.open_gremlin_client()`
+  passes a transport that closes itself on a failed connect.
+- **The driver logs every server error at ERROR** (with the Java stack trace) before raising it. For probes that fail
+  by design (`a.V()` when OLAP is off) wrap the call in `gremlin_io.quiet_gremlin_errors()`.
 - **Seeder blocks are separate sessionless requests:** a variable assigned in one blank-line block is undefined in the
   next. Guarded by `test_template_blocks_do_not_share_script_variables`.
 

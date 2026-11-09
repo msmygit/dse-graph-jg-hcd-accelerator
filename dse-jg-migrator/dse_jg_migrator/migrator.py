@@ -997,8 +997,9 @@ class Migrator:
         The DSE source is read over GraphSON v3: DSE's GraphBinary uses types gremlin-python cannot decode (found
         live), while GraphSON leaves unknown types as ``{'@type', '@value'}`` dicts that ``_from_graphson`` decodes.
         """
-        from gremlin_python.driver import client as gremlin_client
         from gremlin_python.driver import serializer
+
+        from dse_jg_migrator.gremlin_io import open_gremlin_client
 
         kwargs: dict[str, Any] = {}
         if url == self.target_gremlin_url:
@@ -1010,4 +1011,4 @@ class Migrator:
             kwargs["message_serializer"] = serializer.GraphSONSerializersV3d0()
         # DSE requires the "<graph>.g" traversal source; JanusGraph (target) uses plain "g".
         source = "g" if url == self.target_gremlin_url else f"{self.analysis.graph_name}.g"
-        return gremlin_client.Client(url, source, **kwargs)
+        return open_gremlin_client(url, source, **kwargs)

@@ -8,6 +8,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from dse_jg_migrator.gremlin_io import quiet_gremlin_errors
 from dse_jg_migrator.models import (
     AnalysisResult,
     ClusteringKey,
@@ -126,7 +127,7 @@ class Analyser:
 
     def _gremlin_submit(self, script: str, bindings: dict[str, Any] | None = None) -> Any:  # noqa: ANN401
         """Submit a read-only Gremlin script to the source DSE cluster."""
-        from gremlin_python.driver import client as gremlin_client
+        from dse_jg_migrator.gremlin_io import open_gremlin_client
 
         kwargs: dict[str, Any] = {}
         if self._username:
@@ -134,7 +135,7 @@ class Analyser:
         if self._password:
             kwargs["password"] = self._password
 
-        c = gremlin_client.Client(self.gremlin_url, f"{self.graph_name}.g", **kwargs)
+        c = open_gremlin_client(self.gremlin_url, f"{self.graph_name}.g", **kwargs)
         try:
             return c.submit(script, bindings or {}).all().result()
         finally:
@@ -201,8 +202,9 @@ class Analyser:
             pass
         try:
             # OLAP traversal source 'a' responds only when OLAP is configured (read-only probe).
-            if self._gremlin_submit("a.V().limit(0).count()") is not None:
-                config.olap_enabled = True
+            with quiet_gremlin_errors():  # fails by design when OLAP is not configured
+                if self._gremlin_submit("a.V().limit(0).count()") is not None:
+                    config.olap_enabled = True
         except Exception:  # noqa: BLE001, S110
             pass  # OLAP not configured
         return config

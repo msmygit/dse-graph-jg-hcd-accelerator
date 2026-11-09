@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 from dse_jg_migrator.migrator import Migrator
 from dse_jg_migrator.models import AnalysisResult, EdgeLabelDefinition, PartitionKey, VertexLabelDefinition
@@ -596,11 +596,19 @@ def test_make_gremlin_client_passes_credentials_only_for_target(tmp_path) -> Non
         },
     ):
         m._make_gremlin_client(m.target_gremlin_url)
-        fake_client_mod.Client.assert_called_with(m.target_gremlin_url, "g", username="u", password="p")  # noqa: S106
+        fake_client_mod.Client.assert_called_with(
+            m.target_gremlin_url,
+            "g",
+            transport_factory=ANY,
+            username="u",
+            password="p",  # noqa: S106 — test value
+        )
         m._make_gremlin_client(m.source_gremlin_url)
         # DSE requires the "<graph>.g" traversal source (found against a live DSE 6.8).
         # GraphSON v3 for the source: DSE's GraphBinary uses types gremlin-python cannot decode (found live).
-        fake_client_mod.Client.assert_called_with(m.source_gremlin_url, "food.g", message_serializer="graphson3")
+        fake_client_mod.Client.assert_called_with(
+            m.source_gremlin_url, "food.g", transport_factory=ANY, message_serializer="graphson3"
+        )
 
 
 def test_row_to_props_normalises_python_dates_and_aware_datetimes() -> None:
