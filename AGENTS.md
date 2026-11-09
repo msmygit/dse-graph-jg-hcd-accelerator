@@ -309,7 +309,7 @@ The following must **never** appear in any committed file:
 ### 6.2 How to handle credentials
 
 - All credentials are injected via environment variables at runtime.
-- Docker Compose files use `${VARIABLE:-default}` substitution for all passwords.
+- Docker Compose files use `${VARIABLE:-default}` substitution for all passwords, but this project's convention is: no defaults for passwords: use `${VARIABLE:?message}`, or avoid the credential.
 - `config.py` must load credentials exclusively from environment variables or
   a `--password` CLI flag. No hardcoded credential strings.
 - Add the following patterns to `.gitignore`:
