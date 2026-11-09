@@ -181,6 +181,13 @@ class Translator:
 
     def run(self) -> TranslationResult:
         """Execute the full translation and write output files."""
+        result = self.translate()
+        self._write_schema_json(result)
+        self._write_translation_report(result)
+        return result
+
+    def translate(self) -> TranslationResult:
+        """Translate the analysis in memory; writes nothing (the read-only assessor uses it for its index table)."""
         result = TranslationResult()
         an = self.analysis
 
@@ -212,10 +219,6 @@ class Translator:
 
         # 4. Translate indexes
         self._translate_indexes(an.indexes, seen_keys, result)
-
-        # Write output
-        self._write_schema_json(result)
-        self._write_translation_report(result)
         return result
 
     # ──────────────────────────────────────────────────────────────────────────

@@ -169,3 +169,12 @@ def test_hc_009_open_target_is_red() -> None:
     rule = RULES_BY_ID["HC-009"]
     assert rule.severity == Severity.RED
     assert "enabled: true" in rule.remediation and "hcd-entrypoint.sh" in rule.remediation
+
+
+def test_qp_006_maps_whole_value_prefix_to_text_prefix() -> None:
+    """DSE Search.prefix() on an asString() key matches the whole value: JanusGraph textPrefix (Mapping.STRING)."""
+    from dse_jg_migrator.compatibility_rules import RULES_BY_ID
+
+    rule = RULES_BY_ID["QP-006"]
+    assert "Search.prefix() on an asString() key with Text.textPrefix() (Mapping.STRING)" in rule.remediation
+    assert "Search.tokenPrefix() with Text.textContainsPrefix()" in rule.remediation

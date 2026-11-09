@@ -129,12 +129,15 @@ RULES: list[CompatibilityRule] = [
         title="Search.prefix() / Search.token() usage",
         description="DSE Search predicates not available in JanusGraph without an Elasticsearch backend.",
         detection_hint="Search\\.prefix|Search\\.token",
-        jg_equivalent="Text.textContainsPrefix() / Text.textContains() with a mixed index backed by Elasticsearch.",
-        docs_link="https://docs.janusgraph.org/index-management/index-parameters/",
+        jg_equivalent=(
+            "Text.textPrefix() (whole value, Mapping.STRING) / Text.textContains() and Text.textContainsPrefix() "
+            "(tokenized, Mapping.TEXT) with a mixed index backed by OpenSearch / Elasticsearch."
+        ),
+        docs_link="https://docs.janusgraph.org/index-backend/text-search/",
         remediation=(
-            "Replace Search.prefix() with Text.textContainsPrefix(). "
-            "Replace Search.token() with Text.textContains(). "
-            "Ensure a mixed index with Mapping.TEXT exists on the property."
+            "Replace Search.prefix() on an asString() key with Text.textPrefix() (Mapping.STRING). "
+            "Replace Search.token() with Text.textContains() and Search.tokenPrefix() with Text.textContainsPrefix() "
+            "(Mapping.TEXT). The assessment's Index Analysis lists the predicates each indexed key serves."
         ),
     ),
     CompatibilityRule(

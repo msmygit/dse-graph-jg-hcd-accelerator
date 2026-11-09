@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 
-from dse_jg_migrator.models import AssessmentFinding, AssessmentResult
+from dse_jg_migrator.models import AssessmentFinding, AssessmentResult, IndexMapping
 
 
 def _make_result(risk: str = "HIGH") -> AssessmentResult:
@@ -96,7 +96,7 @@ def test_write_json_valid_schema(tmp_path: os.PathLike) -> None:
     with open(paths["json"], encoding="utf-8") as fh:
         data = json.load(fh)
 
-    assert data["schema_version"] == "1.0"
+    assert data["schema_version"] == "1.1"  # 1.1 adds index_analysis
     assert data["graph_name"] == "food"
     assert data["overall_risk"] == "HIGH"
     assert isinstance(data["findings"], list)
@@ -198,3 +198,93 @@ def test_low_risk_report_no_blockers_section(tmp_path: os.PathLike) -> None:
     # The executive summary table contains "Blockers (RED)" as a metric name —
     # but the full "## Blockers" section header should NOT appear for LOW risk.
     assert "## Blockers" not in content
+
+
+# ---------------------------------------------------------------------------
+# Cluster Overview and Index Analysis (plan Step 0.3 §1 and §4)
+# ---------------------------------------------------------------------------
+
+
+def _with_indexes(result: AssessmentResult) -> AssessmentResult:
+    result.index_analysis = [
+        IndexMapping(
+            "recipe_search",
+            "searchIndex",
+            "recipe",
+            ["instructions"],
+            "recipe_search",
+            "mixed",
+            "OpenSearch / Elasticsearch",
+            "instructions: `Search.token*()` → `textContains`",
+        ),
+        IndexMapping(
+            "person_by_name",
+            "materializedView",
+            "person",
+            ["name"],
+            "person_by_name",
+            "composite",
+            "HCD (storage backend)",
+            "equality on name",
+        ),
+    ]
+    result.cluster_overview = {
+        "vertex_label_count": 3,
+        "edge_label_count": 3,
+        "property_key_count": 12,
+        "index_count": 2,
+        "indexes_by_kind": {"materializedView": 1, "searchIndex": 1},
+        "schema_mode": "unknown",
+        "olap_enabled": False,
+    }
+    return result
+
+
+def test_markdown_shows_where_the_search_backend_is_needed(tmp_path: os.PathLike) -> None:
+    """Plan Step 0.3 §4: each DSE index, its JanusGraph index and backend — missing from the live report."""
+    from dse_jg_migrator.assessment_reporter import AssessmentReporter
+
+    paths = AssessmentReporter(_with_indexes(_make_result()), output_dir=str(tmp_path)).write_all()
+    md = open(paths["markdown"], encoding="utf-8").read()
+    assert "| Search backend (OpenSearch / Elasticsearch) | Required — 1 mixed index(es) |" in md
+    assert "**OpenSearch / Elasticsearch is required** for 1 mixed index(es): `recipe_search`" in md
+    assert "## Index Analysis" in md
+    assert "| recipe_search | searchIndex | recipe | instructions | recipe_search (mixed) | 🔎 OpenSearch" in md
+    assert "| person_by_name | materializedView | person | name | person_by_name (composite) | HCD" in md
+    assert "## Cluster Overview" in md
+    assert "| Indexes | 2 (1 materializedView, 1 searchIndex) |" in md
+    assert "| OLAP Enabled | no |" in md
+
+
+def test_json_and_html_carry_the_index_analysis(tmp_path: os.PathLike) -> None:
+    from dse_jg_migrator.assessment_reporter import AssessmentReporter
+
+    paths = AssessmentReporter(_with_indexes(_make_result()), output_dir=str(tmp_path)).write_all()
+    data = json.load(open(paths["json"], encoding="utf-8"))
+    first = data["index_analysis"][0]
+    assert (first["dse_index"], first["jg_kind"], first["needs_search_backend"]) == ("recipe_search", "mixed", True)
+    assert data["index_analysis"][1]["needs_search_backend"] is False
+    html = open(paths["html"], encoding="utf-8").read()
+    assert "<h2>Index Analysis</h2>" in html
+    assert "<td>OpenSearch / Elasticsearch</td>" in html
+
+
+def test_search_backend_not_required_without_mixed_indexes(tmp_path: os.PathLike) -> None:
+    from dse_jg_migrator.assessment_reporter import AssessmentReporter
+
+    result = _with_indexes(_make_result())
+    result.index_analysis = result.index_analysis[1:]
+    md = open(AssessmentReporter(result, output_dir=str(tmp_path)).write_all()["markdown"], encoding="utf-8").read()
+    assert "| Search backend (OpenSearch / Elasticsearch) | Not required by this schema's indexes |" in md
+    assert "is required" not in md
+
+
+def test_no_index_sections_when_no_schema_was_read(tmp_path: os.PathLike) -> None:
+    from dse_jg_migrator.assessment_reporter import AssessmentReporter
+
+    result = _make_result()
+    result.cluster_overview = {}  # the source schema could not be read (CF-006)
+    md = open(AssessmentReporter(result, output_dir=str(tmp_path)).write_all()["markdown"], encoding="utf-8").read()
+    assert "| Search backend (OpenSearch / Elasticsearch) | Unknown — no indexes were read |" in md
+    assert "## Index Analysis" not in md
+    assert "## Cluster Overview" not in md
