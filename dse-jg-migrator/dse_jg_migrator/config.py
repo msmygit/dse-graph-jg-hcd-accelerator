@@ -69,7 +69,7 @@ class MigrationConfig:
     write_batch: int = 100
     parallel_labels: int = 1
     sqlite_wal: bool = True
-    checkpoint_db: str = "migration-checkpoint.db"
+    checkpoint_db: str = ""  # defaults to <output_dir>/<graph_name>-migration-checkpoint.db
     audit_log: str = ""  # defaults to <graph_name>-migration-audit.jsonl
 
 

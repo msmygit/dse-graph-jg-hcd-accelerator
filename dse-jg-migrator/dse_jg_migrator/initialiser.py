@@ -10,6 +10,92 @@ import json
 import time
 from typing import Any
 
+DEFAULT_INDEX_TIMEOUT_S = 30 * 60  # Appendix E.8: default wait for index enablement is 30 minutes
+
+# Every script ends in a returned value: a script whose last statement is ``mgmt.commit();`` fails on a live
+# JanusGraph server with "enclosing transaction is closed".
+_SCHEMA_SCRIPT = """
+def m = graph.openManagement()
+def created = []
+try {
+  pks.each { pk ->
+    if (m.getPropertyKey(pk.key) == null) {
+      m.makePropertyKey(pk.key).dataType(Class.forName(pk.cls)).cardinality(Cardinality.valueOf(pk.card)).make()
+      created << ('PropertyKey:' + pk.key)
+    }
+  }
+  vls.each { vl ->
+    if (m.getVertexLabel(vl) == null) { m.makeVertexLabel(vl).make(); created << ('VertexLabel:' + vl) }
+  }
+  els.each { el ->
+    if (m.getEdgeLabel(el.label) == null) {
+      m.makeEdgeLabel(el.label).multiplicity(Multiplicity.valueOf(el.mult)).make()
+      created << ('EdgeLabel:' + el.label)
+    }
+  }
+  idxs.each { ix ->
+    if (m.getGraphIndex(ix.name) == null) {
+      def b = m.buildIndex(ix.name, ix.edge ? Edge.class : Vertex.class)
+      ix.keys.each { k ->
+        if (k.mapping) { b.addKey(m.getPropertyKey(k.name), Mapping.valueOf(k.mapping).asParameter()) }
+        else { b.addKey(m.getPropertyKey(k.name)) }
+      }
+      if (ix.only) { b.indexOnly(ix.edge ? m.getEdgeLabel(ix.only) : m.getVertexLabel(ix.only)) }
+      if (ix.unique) { b.unique() }
+      if (ix.backend) { b.buildMixedIndex(ix.backend) } else { b.buildCompositeIndex() }
+      created << ('Index:' + ix.name)
+    }
+  }
+  vcis.each { v ->
+    def label = m.getEdgeLabel(v.label)
+    if (m.getRelationIndex(label, v.name) == null) {
+      m.buildEdgeIndex(label, v.name, Direction.valueOf(v.dir), Order.valueOf(v.order),
+                       v.keys.collect { m.getPropertyKey(it) } as PropertyKey[])
+      created << ('EdgeIndex:' + v.name)
+    }
+  }
+  m.commit()
+  return created
+} catch (Exception e) {
+  m.rollback()
+  throw e
+}
+"""
+
+# Status is per key; calling getIndexStatus() with no argument fails.
+_INDEX_STATUS_SCRIPT = (
+    "def m = graph.openManagement(); def i = m.getGraphIndex(iname); "
+    "def s = i == null ? [] : i.getFieldKeys().collect { i.getIndexStatus(it).name() }; m.rollback(); s"
+)
+
+# An index over a property key committed in an EARLIER transaction stays INSTALLED (live finding: a target shared by
+# several graphs, or a re-run adding an index). It is promoted along the documented lifecycle
+# (janusgraph docs: schema/index-management): REGISTER_INDEX, then REINDEX, which enables the index when it finishes.
+# Each action is its own short request — the server's evaluationTimeout is 30 s, so the reindex job is started, not
+# awaited; the status poll waits for ENABLED.
+_REGISTER_SCRIPT = (
+    "def m = graph.openManagement(); m.updateIndex(m.getGraphIndex(iname), SchemaAction.REGISTER_INDEX); "
+    "m.commit(); 'registered'"
+)
+_REINDEX_SCRIPT = (
+    "def m = graph.openManagement(); m.updateIndex(m.getGraphIndex(iname), SchemaAction.REINDEX); "
+    "m.commit(); 'reindexing'"
+)
+
+_OPEN_INSTANCES_SCRIPT = "def m = graph.openManagement(); def r = m.getOpenInstances().toList(); m.rollback(); r"
+_OPEN_TX_SCRIPT = "graph.getOpenTransactions().size()"
+
+_VERIFY_SCRIPT = """
+def m = graph.openManagement()
+def found = []
+pks.each { if (m.getPropertyKey(it) != null) { found << ('PropertyKey:' + it) } }
+vls.each { if (m.getVertexLabel(it) != null) { found << ('VertexLabel:' + it) } }
+els.each { if (m.getEdgeLabel(it) != null) { found << ('EdgeLabel:' + it) } }
+idxs.each { if (m.getGraphIndex(it) != null) { found << ('Index:' + it) } }
+m.rollback()
+found
+""".strip()
+
 
 class Initialiser:
     """Applies a JanusGraph JSON schema to the target cluster.
@@ -30,6 +116,7 @@ class Initialiser:
         mode: str = "gremlin-script",
         username: str | None = None,
         password: str | None = None,
+        index_timeout_s: int = DEFAULT_INDEX_TIMEOUT_S,
     ) -> None:
         """
         Args:
@@ -38,7 +125,10 @@ class Initialiser:
             mode: 'gremlin-script' (default) or 'server-restart'.
             username: Optional Gremlin server username.
             password: Optional Gremlin server password.
+            index_timeout_s: Max seconds to wait for composite indexes to be enabled
+                (Appendix E.8; default 30 minutes).
         """
+        self.index_timeout_s = index_timeout_s
         self.target_gremlin_url = target_gremlin_url
         self.schema_json_path = schema_json_path
         self.mode = mode
@@ -76,141 +166,187 @@ class Initialiser:
             c.close()
 
     def _init_via_gremlin(self, schema: dict[str, Any]) -> dict[str, Any]:
-        """Send schema creation Gremlin scripts to the JanusGraph Gremlin server.
+        """Create the whole schema in ONE management transaction.
 
-        Writes to: target JanusGraph — management transactions.
+        Writes to: target JanusGraph — a single management transaction (rolled back on any error).
+
+        Property keys and the indexes over them must be created in the same transaction: an index created in
+        a later transaction than its keys stays INSTALLED and can never be registered or enabled (observed on a
+        live JanusGraph 1.x). The script is idempotent — existing elements are skipped.
         """
-        created: list[str] = []
+        bindings = self.build_bindings(schema)
+        try:
+            created = [str(c) for c in self._submit(_SCHEMA_SCRIPT, bindings)]
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "partial",
+                "created": [],
+                "errors": [f"Schema creation on {self.target_gremlin_url} failed (rolled back): {exc}"],
+            }
+
         errors: list[str] = []
+        # Every schema index, not only the ones created now: a re-run must also heal an index left INSTALLED.
+        indexes = [f"Index:{ix['name']}" for ix in bindings["idxs"]]
+        pending = self._await_index_enablement(indexes, self.index_timeout_s)
+        hint = (self._stale_instance_hint() + self._open_transaction_hint()) if pending else ""
+        errors.extend(f"Index:{name} not ENABLED after {self.index_timeout_s}s{hint}" for name in pending)
+        return {"status": "ok" if not errors else "partial", "created": created, "errors": errors}
 
-        # 1. Property keys
-        for pk in schema.get("propertyKeys", []):
-            script = (
-                "mgmt = graph.openManagement();"
-                "if (!mgmt.getPropertyKey(pk_name)) {"
-                "  mgmt.makePropertyKey(pk_name).dataType(Object.class)"
-                "      .cardinality(Cardinality.SINGLE).make();"
-                "}"
-                "mgmt.commit();"
-            )
-            try:
-                self._submit(script, {"pk_name": pk["key"]})
-                created.append(f"PropertyKey:{pk['key']}")
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"PropertyKey:{pk['key']} - {exc}")
+    @staticmethod
+    def build_bindings(schema: dict[str, Any]) -> dict[str, Any]:
+        """Convert the translated JSON schema into the bindings consumed by ``_SCHEMA_SCRIPT``."""
 
-        # 2. Vertex labels
-        for vl in schema.get("vertexLabels", []):
-            script = (
-                "mgmt = graph.openManagement();"
-                "if (!mgmt.getVertexLabel(vl_name)) {"
-                "  mgmt.makeVertexLabel(vl_name).make();"
-                "}"
-                "mgmt.commit();"
-            )
-            try:
-                self._submit(script, {"vl_name": vl["label"]})
-                created.append(f"VertexLabel:{vl['label']}")
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"VertexLabel:{vl['label']} - {exc}")
-
-        # 3. Edge labels
-        for el in schema.get("edgeLabels", []):
-            script = (
-                "mgmt = graph.openManagement();"
-                "if (!mgmt.getEdgeLabel(el_name)) {"
-                "  mgmt.makeEdgeLabel(el_name).multiplicity(MULTI).make();"
-                "}"
-                "mgmt.commit();"
-            )
-            try:
-                self._submit(script, {"el_name": el["label"]})
-                created.append(f"EdgeLabel:{el['label']}")
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"EdgeLabel:{el['label']} - {exc}")
-
-        # 4. Composite indexes
-        for ci in schema.get("compositeIndexes", []):
-            key_names = [k["propertyKey"] for k in ci.get("keys", [])]
-            script = (
-                "mgmt = graph.openManagement();"
-                "if (!mgmt.getGraphIndex(idx_name)) {"
-                "  builder = mgmt.buildIndex(idx_name, Vertex.class);"
-                "  key_names.each { kn -> builder.addKey(mgmt.getPropertyKey(kn)); };"
-                "  if (idx_only) { builder.indexOnly(mgmt.getVertexLabel(idx_only)); };"
-                "  builder.buildCompositeIndex();"
-                "}"
-                "mgmt.commit();"
-            )
-            try:
-                self._submit(
-                    script,
-                    {
-                        "idx_name": ci["name"],
-                        "key_names": key_names,
-                        "idx_only": ci.get("indexOnly", ""),
-                    },
+        def _keys(index: dict[str, Any]) -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            for k in index.get("keys", []):
+                mapping = next(
+                    (str(p["value"]).rsplit(".", 1)[-1] for p in k.get("parameters", []) if p.get("key") == "mapping"),
+                    "",
                 )
-                created.append(f"CompositeIndex:{ci['name']}")
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"CompositeIndex:{ci['name']} - {exc}")
+                out.append({"name": k["propertyKey"], "mapping": mapping})
+            return out
 
-        self._await_index_enablement(created)
+        def _index(index: dict[str, Any], backend: str) -> dict[str, Any]:
+            return {
+                "name": index["name"],
+                "edge": str(index.get("typeClass", "")).endswith(".Edge"),
+                "only": index.get("indexOnly", "") or "",
+                "unique": bool(index.get("unique", False)),
+                "backend": backend,
+                "keys": _keys(index),
+            }
 
+        idxs = [_index(i, "") for i in schema.get("compositeIndexes", [])]
+        idxs += [_index(i, i.get("indexBackend", "search")) for i in schema.get("mixedIndexes", [])]
         return {
-            "status": "ok" if not errors else "partial",
-            "created": created,
-            "errors": errors,
+            "pks": [
+                {
+                    "key": pk["key"],
+                    "cls": "[B" if pk["className"] == "byte[]" else pk["className"],
+                    "card": pk.get("cardinality", "SINGLE"),
+                }
+                for pk in schema.get("propertyKeys", [])
+            ],
+            "vls": [vl["label"] for vl in schema.get("vertexLabels", [])],
+            "els": [
+                {"label": el["label"], "mult": el.get("multiplicity", "MULTI")} for el in schema.get("edgeLabels", [])
+            ],
+            "idxs": idxs,
+            "vcis": [
+                {
+                    "name": v["name"],
+                    "label": v["indexedEdgeLabel"],
+                    "dir": v.get("direction", "BOTH"),
+                    "order": v.get("order", "asc"),
+                    "keys": list(v.get("propertyKeys", [])),
+                }
+                for v in schema.get("vertexCentricEdgeIndexes", [])
+            ],
         }
 
-    def _await_index_enablement(self, created: list[str], timeout_s: int = 120) -> None:
-        """Poll until all composite indexes reach ENABLED state.
+    def _await_index_enablement(self, created: list[str], timeout_s: int = DEFAULT_INDEX_TIMEOUT_S) -> list[str]:
+        """Poll until every graph index reaches ENABLED (Appendix E.8), promoting INSTALLED indexes.
 
-        Writes to: target JanusGraph — management rollback only (read-like).
+        Reads from / writes to: target JanusGraph — status queries are rolled back; an index with an INSTALLED key
+        gets REGISTER_INDEX, and once every key is REGISTERED or ENABLED, one REINDEX (which enables it).
+        Returns the names of indexes that were still not ENABLED when the timeout expired.
         """
-        index_names = [c.split(":")[1] for c in created if c.startswith("CompositeIndex:")]
-        if not index_names:
-            return
+        pending = [c.split(":", 1)[1] for c in created if c.startswith("Index:")]
+        if not pending:
+            return []
 
+        registered: set[str] = set()
+        reindexed: set[str] = set()
         deadline = time.time() + timeout_s
-        while time.time() < deadline:
-            all_enabled = True
-            for idx_name in index_names:
+        while pending and time.time() < deadline:
+            still: list[str] = []
+            for idx_name in pending:
                 try:
-                    result = self._submit(
-                        "mgmt = graph.openManagement();"
-                        "idx = mgmt.getGraphIndex(iname);"
-                        "status = idx?.getIndexStatus()?.name() ?: 'UNKNOWN';"
-                        "mgmt.rollback();"
-                        "status;",
-                        {"iname": idx_name},
-                    )
-                    status = str(result[0] if result else "UNKNOWN")
-                    if status not in ("ENABLED", "REGISTERED"):
-                        all_enabled = False
-                except Exception:  # noqa: BLE001, S110
-                    all_enabled = False
-            if all_enabled:
-                return
-            time.sleep(5)
+                    statuses = {str(s) for s in self._submit(_INDEX_STATUS_SCRIPT, {"iname": idx_name})}
+                    if statuses == {"ENABLED"}:
+                        continue
+                    still.append(idx_name)
+                    if "INSTALLED" in statuses and idx_name not in registered:
+                        self._submit(_REGISTER_SCRIPT, {"iname": idx_name})
+                        registered.add(idx_name)
+                    elif (
+                        "REGISTERED" in statuses and statuses <= {"REGISTERED", "ENABLED"} and idx_name not in reindexed
+                    ):
+                        self._submit(_REINDEX_SCRIPT, {"iname": idx_name})
+                        reindexed.add(idx_name)
+                except Exception:  # noqa: BLE001
+                    if idx_name not in still:
+                        still.append(idx_name)  # transient failure: retry until the deadline
+            pending = still
+            if pending:
+                time.sleep(5)
+        return pending
+
+    def _stale_instance_hint(self) -> str:
+        """Explain a stuck index when other JanusGraph instances are registered (diagnostic only).
+
+        Reads from: target JanusGraph — management query, rolled back. Index registration needs an acknowledgement
+        from every registered instance, so one that was not shut down cleanly blocks it forever (found live after a
+        crash). It is never force-closed here: removing a still-running instance corrupts data (JanusGraph docs,
+        operations/recovery).
+        """
+        try:
+            instances = [str(i) for i in self._submit(_OPEN_INSTANCES_SCRIPT)]
+        except Exception:  # noqa: BLE001
+            return ""
+        others = [i for i in instances if not i.endswith("(current)")]
+        if not others:
+            return ""
+        return (
+            f" — {len(others)} other JanusGraph instance(s) registered ({', '.join(others)}). An instance that was not"
+            " shut down cleanly blocks index registration; if it is no longer running, remove it with"
+            " mgmt.forceCloseInstance('<id>'); mgmt.commit() (JanusGraph docs: operations/recovery) and re-run"
+        )
+
+    def _open_transaction_hint(self) -> str:
+        """Explain a stuck index when the server holds open transactions (diagnostic only).
+
+        Reads from: target JanusGraph. Registration is acknowledged only after every transaction that predates it
+        has closed (JanusGraph docs: index-reindexing; the server logs "Stale transaction alert"). Found live: one
+        leaked transaction kept a key INSTALLED. They are never rolled back here — they may belong to other clients.
+        """
+        try:
+            result = self._submit(_OPEN_TX_SCRIPT)
+            open_tx = int(result[0]) if result else 0
+        except Exception:  # noqa: BLE001
+            return ""
+        if open_tx == 0:
+            return ""
+        return (
+            f" — {open_tx} open transaction(s) on the JanusGraph server predate the index and block its registration"
+            " (server log: 'Stale transaction alert'). Close the clients holding them, or restart JanusGraph (then"
+            " force-close the old instance id, see above), and re-run"
+        )
 
     def verify_schema(self, schema: dict[str, Any]) -> dict[str, bool]:
-        """Verify that all schema elements from the JSON schema exist on the target.
+        """Verify that every property key, label and index of the schema exists on the target.
 
-        Reads from: target JanusGraph — management queries.
-        Returns a dict of element→pass/fail.
+        Reads from: target JanusGraph — one management query, always rolled back.
+        Returns a dict of ``Kind:name`` -> present.
         """
-        results: dict[str, bool] = {}
-        for pk in schema.get("propertyKeys", []):
-            try:
-                r = self._submit(
-                    "mgmt = graph.openManagement();"
-                    "exists = mgmt.getPropertyKey(pk_name) != null;"
-                    "mgmt.rollback();"
-                    "exists;",
-                    {"pk_name": pk["key"]},
-                )
-                results[f"PropertyKey:{pk['key']}"] = bool(r[0] if r else False)
-            except Exception:  # noqa: BLE001, S110
-                results[f"PropertyKey:{pk['key']}"] = False
-        return results
+        b = self.build_bindings(schema)
+        wanted = (
+            [f"PropertyKey:{pk['key']}" for pk in b["pks"]]
+            + [f"VertexLabel:{vl}" for vl in b["vls"]]
+            + [f"EdgeLabel:{el['label']}" for el in b["els"]]
+            + [f"Index:{ix['name']}" for ix in b["idxs"]]
+        )
+        try:
+            found = self._submit(
+                _VERIFY_SCRIPT,
+                {
+                    "pks": [pk["key"] for pk in b["pks"]],
+                    "vls": b["vls"],
+                    "els": [el["label"] for el in b["els"]],
+                    "idxs": [ix["name"] for ix in b["idxs"]],
+                },
+            )
+        except Exception:  # noqa: BLE001
+            return {name: False for name in wanted}
+        present = {str(x) for x in (found[0] if found and isinstance(found[0], list) else found or [])}
+        return {name: name in present for name in wanted}

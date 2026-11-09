@@ -1,0 +1,238 @@
+{
+  "schema_version": "1.0",
+  "graph_name": "food",
+  "engine": "dsg",
+  "assessed_at": "2026-11-09T12:26:29.335540Z",
+  "overall_risk": "HIGH",
+  "summary": {
+    "total_findings": 23,
+    "by_severity": {
+      "RED": 2,
+      "YELLOW": 19,
+      "GREEN": 2
+    },
+    "by_category": {
+      "schema": 4,
+      "index": 5,
+      "query_pattern": 2,
+      "tinkerpop_delta": 5,
+      "hcd_target": 7
+    }
+  },
+  "cluster_overview": {
+    "vertex_label_count": 6,
+    "edge_label_count": 4,
+    "index_count": 4,
+    "schema_mode": "Unknown",
+    "olap_enabled": false
+  },
+  "findings": [
+    {
+      "rule_id": "SC-001",
+      "category": "schema",
+      "severity": "YELLOW",
+      "title": "partitionBy() / clusterBy() on vertex label",
+      "detail": "Detected 'partitionBy' in schema DSL.",
+      "remediation": "partitionBy() and clusterBy() keys become regular JanusGraph property keys. Composite indexes on these keys preserve query patterns.",
+      "docs_link": "https://docs.janusgraph.org/schema/"
+    },
+    {
+      "rule_id": "SC-003",
+      "category": "schema",
+      "severity": "RED",
+      "title": "mapOf(K, V) property type",
+      "detail": "Detected 'mapOf(' in schema DSL.",
+      "remediation": "Use --map-strategy flat (default) to explode map entries into parallel <prop>_key LIST and <prop>_value LIST properties. Or use --map-strategy json to serialise the entire map as a JSON string.",
+      "docs_link": "https://docs.janusgraph.org/schema/"
+    },
+    {
+      "rule_id": "SC-004",
+      "category": "schema",
+      "severity": "YELLOW",
+      "title": "setOf(X) / listOf(X) collection property",
+      "detail": "Detected 'setOf(' in schema DSL.",
+      "remediation": "setOf(X) maps to Cardinality.SET; listOf(X) maps to Cardinality.LIST. This is handled automatically by the translator.",
+      "docs_link": "https://docs.janusgraph.org/schema/#property-key-cardinality"
+    },
+    {
+      "rule_id": "SC-008",
+      "category": "schema",
+      "severity": "YELLOW",
+      "title": "Geospatial property type (Point) in schema",
+      "detail": "Detected 'Point' in schema DSL.",
+      "remediation": "Point properties are automatically migrated to WKT strings with a Mapping.PREFIX_TREE mixed index. Polygon and Linestring are stored as WKT but require manual geo index configuration.",
+      "docs_link": "https://docs.janusgraph.org/index-management/index-parameters/#geoshape"
+    },
+    {
+      "rule_id": "IX-001",
+      "category": "index",
+      "severity": "YELLOW",
+      "title": "materializedView() \u2192 composite index",
+      "detail": "Detected 'materializedView(' in schema DSL.",
+      "remediation": "materializedView is automatically translated to a composite index by the translator.",
+      "docs_link": "https://docs.janusgraph.org/index-management/index-performance/#composite-index"
+    },
+    {
+      "rule_id": "IX-004",
+      "category": "index",
+      "severity": "YELLOW",
+      "title": "searchIndex().by('x').asText() \u2192 mixed index with Mapping.TEXT",
+      "detail": "Detected 'asText(' in schema DSL.",
+      "remediation": "searchIndex with asText() is automatically translated to a mixed index with Mapping.TEXT. Ensure an Elasticsearch/OpenSearch backend is configured.",
+      "docs_link": "https://docs.janusgraph.org/index-management/index-parameters/#text-search"
+    },
+    {
+      "rule_id": "IX-005",
+      "category": "index",
+      "severity": "YELLOW",
+      "title": "searchIndex().by('x').asString() \u2192 mixed index with Mapping.STRING",
+      "detail": "Detected 'asString(' in schema DSL.",
+      "remediation": "searchIndex with asString() is automatically translated to a mixed index with Mapping.STRING.",
+      "docs_link": "https://docs.janusgraph.org/index-management/index-parameters/#string-search"
+    },
+    {
+      "rule_id": "IX-006",
+      "category": "index",
+      "severity": "YELLOW",
+      "title": "searchIndex() on geo property \u2192 mixed index with Mapping.PREFIX_TREE",
+      "detail": "Detected searchIndex on a geo property (Point type) in schema DSL.",
+      "remediation": "Geo searchIndex is automatically translated to a mixed index with Mapping.PREFIX_TREE. Point properties stored as WKT strings.",
+      "docs_link": "https://docs.janusgraph.org/index-management/index-parameters/#geoshape"
+    },
+    {
+      "rule_id": "IX-008",
+      "category": "index",
+      "severity": "YELLOW",
+      "title": "Vertex-centric RelationIndex \u2192 buildEdgeIndex()",
+      "detail": "Detected vertex-centric edge index pattern in schema DSL.",
+      "remediation": "Vertex-centric indexes are automatically translated to JanusGraph vertex-centric edge indexes by the translator.",
+      "docs_link": "https://docs.janusgraph.org/index-management/index-performance/#vertex-centric-indexes"
+    },
+    {
+      "rule_id": "QP-006",
+      "category": "query_pattern",
+      "severity": "RED",
+      "title": "Search.prefix() / Search.token() usage",
+      "detail": "searchIndex with asText/asString detected \u2014 application code likely uses Search.token() or Search.prefix(). Review and update to Text.*.",
+      "remediation": "Replace Search.prefix() with Text.textContainsPrefix(). Replace Search.token() with Text.textContains(). Ensure a mixed index with Mapping.TEXT exists on the property.",
+      "docs_link": "https://docs.janusgraph.org/index-management/index-parameters/"
+    },
+    {
+      "rule_id": "QP-010",
+      "category": "query_pattern",
+      "severity": "YELLOW",
+      "title": "Geo.inside(Geo.point(...), radius) usage",
+      "detail": "Geo/Point type detected in schema \u2014 application code may use Geo.inside(). Review and update to Geo.within(Geoshape.circle(...)).",
+      "remediation": "Replace Geo.inside(Geo.point(lat, lon), radius) with Geo.within(Geoshape.circle(lat, lon, radius)). Ensure a mixed index with Mapping.PREFIX_TREE exists on the geo property.",
+      "docs_link": "https://docs.janusgraph.org/index-management/index-parameters/#geoshape"
+    },
+    {
+      "rule_id": "TP-001",
+      "category": "tinkerpop_delta",
+      "severity": "YELLOW",
+      "title": "repeat() step global semantics change (TinkerPop 3.4 \u2192 3.7)",
+      "detail": "Advisory: TinkerPop 3.4 \u2192 3.7 breaking change applies to all DSE Graph migrations.",
+      "remediation": "Add explicit .until() or .times() guards to all repeat() traversals. Without guards, repeat() in TinkerPop 3.7 may loop indefinitely on large graphs.",
+      "docs_link": "https://tinkerpop.apache.org/docs/current/upgrade/"
+    },
+    {
+      "rule_id": "TP-002",
+      "category": "tinkerpop_delta",
+      "severity": "YELLOW",
+      "title": "valueMap() return format change",
+      "detail": "Advisory: TinkerPop 3.4 \u2192 3.7 breaking change applies to all DSE Graph migrations.",
+      "remediation": "Update valueMap() calls to include .by(unfold()) for properties with SINGLE cardinality, or update consuming code to handle List<Object> values.",
+      "docs_link": "https://tinkerpop.apache.org/docs/current/reference/#valuemap-step"
+    },
+    {
+      "rule_id": "TP-003",
+      "category": "tinkerpop_delta",
+      "severity": "YELLOW",
+      "title": "scriptEvaluationTimeout renamed to evaluationTimeout",
+      "detail": "Advisory: TinkerPop 3.4 \u2192 3.7 breaking change applies to all DSE Graph migrations.",
+      "remediation": "Rename scriptEvaluationTimeout to evaluationTimeout in gremlin-server.yaml. Value is in milliseconds.",
+      "docs_link": "https://tinkerpop.apache.org/docs/current/reference/#_server_configuration"
+    },
+    {
+      "rule_id": "TP-004",
+      "category": "tinkerpop_delta",
+      "severity": "GREEN",
+      "title": "GraphBinary serialisation supported",
+      "detail": "Advisory: TinkerPop 3.4 \u2192 3.7 breaking change applies to all DSE Graph migrations.",
+      "remediation": "Update gremlin-python client to use GraphBinarySerializersV1 for improved performance. No breaking changes \u2014 fully backward compatible.",
+      "docs_link": "https://tinkerpop.apache.org/docs/current/dev/io/#graphbinary"
+    },
+    {
+      "rule_id": "TP-005",
+      "category": "tinkerpop_delta",
+      "severity": "YELLOW",
+      "title": "property(k, v) cardinality resolution",
+      "detail": "Advisory: TinkerPop 3.4 \u2192 3.7 breaking change applies to all DSE Graph migrations.",
+      "remediation": "Set schema.default=none (strict) or schema.default=default (auto-create) in janusgraph.properties. With schema.default=none, all property keys must be pre-defined before use.",
+      "docs_link": "https://docs.janusgraph.org/basics/configuration-reference/#schema"
+    },
+    {
+      "rule_id": "HC-001",
+      "category": "hcd_target",
+      "severity": "YELLOW",
+      "title": "HCD AdvancedAuthenticator is enabled",
+      "detail": "HCD AdvancedAuthenticator confirmed active \u2014 credentials accepted. Ensure JanusGraph config sets storage.cql.username and storage.cql.password.",
+      "remediation": "Set storage.cql.username and storage.cql.password in janusgraph.properties. Anonymous connections to HCD will be rejected.",
+      "docs_link": "https://docs.janusgraph.org/basics/configuration-reference/#storage-cql"
+    },
+    {
+      "rule_id": "HC-002",
+      "category": "hcd_target",
+      "severity": "YELLOW",
+      "title": "HCD materialized_views_enabled: false",
+      "detail": "HCD materialized_views_enabled=false confirmed \u2014 JanusGraph will not create CQL MVs. No conflict.",
+      "remediation": "No JanusGraph action required. Remove any pre-existing CQL MV creation scripts from your deployment automation.",
+      "docs_link": "https://docs.janusgraph.org/storage-backend/cassandra/"
+    },
+    {
+      "rule_id": "HC-003",
+      "category": "hcd_target",
+      "severity": "YELLOW",
+      "title": "HCD guardrail defaults enforce batch-size limits",
+      "detail": "HCD target pre-flight advisory.",
+      "remediation": "Ensure storage.cql.atomic-batch-mutate=false (or omit \u2014 false is the default). Do not set storage.cql.atomic-batch-mutate=true against HCD.",
+      "docs_link": "https://docs.janusgraph.org/basics/configuration-reference/#storage-cql"
+    },
+    {
+      "rule_id": "HC-004",
+      "category": "hcd_target",
+      "severity": "YELLOW",
+      "title": "HCD storage_compatibility_mode: NONE (Cassandra 5+ SSTable formats)",
+      "detail": "HCD target pre-flight advisory.",
+      "remediation": "No action needed. Informational only.",
+      "docs_link": "https://docs.janusgraph.org/storage-backend/cassandra/"
+    },
+    {
+      "rule_id": "HC-005",
+      "category": "hcd_target",
+      "severity": "YELLOW",
+      "title": "HCD default_secondary_index: sai",
+      "detail": "HCD target pre-flight advisory.",
+      "remediation": "No action needed. Informational only.",
+      "docs_link": "https://docs.janusgraph.org/index-management/"
+    },
+    {
+      "rule_id": "HC-006",
+      "category": "hcd_target",
+      "severity": "GREEN",
+      "title": "HCD CQL port 9042, datacenter dc1",
+      "detail": "HCD target pre-flight advisory.",
+      "remediation": "No action needed. Fully compatible.",
+      "docs_link": "https://docs.janusgraph.org/basics/configuration-reference/#storage-cql"
+    },
+    {
+      "rule_id": "HC-007",
+      "category": "hcd_target",
+      "severity": "YELLOW",
+      "title": "HCD linux/amd64 image \u2014 Apple Silicon emulation",
+      "detail": "Apple Silicon (arm64) detected \u2014 HCD linux/amd64 image runs under Rosetta emulation. Expect ~2\u00d7 longer startup time.",
+      "remediation": "Enable Rosetta emulation in Docker Desktop \u2192 Settings \u2192 Features in Development. Allocate \u2265 8 GB RAM. Expect ~2\u00d7 longer startup time vs native amd64.",
+      "docs_link": "https://docs.docker.com/desktop/features/rosetta/"
+    }
+  ]
+}

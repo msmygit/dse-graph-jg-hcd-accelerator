@@ -51,11 +51,6 @@ markers = [
 
 [tool.coverage.run]
 source = ["dse_jg_migrator"]
-omit = [
-    "dse_jg_migrator/cli.py",      # CLI wiring — covered by e2e tests, not unit tests
-    "dse_jg_migrator/config.py",   # Pure dataclasses; no logic to unit-test
-    "dse_jg_migrator/reporter.py", # Thin report formatter; covered by e2e tests
-]
 
 [tool.coverage.report]
-fail_under = 60
+fail_under = 80

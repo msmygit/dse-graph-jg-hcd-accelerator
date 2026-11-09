@@ -141,3 +141,63 @@ def test_udt_definition_fields() -> None:
     )
     assert len(udt.fields) == 2
     assert udt.fields[0].name == "street"
+
+
+def test_analysis_result_round_trips_through_json() -> None:
+    """from_dict must invert to_dict — a partial reload dropped clustering keys (found live: iot `reading.ts`)."""
+    import json
+
+    from dse_jg_migrator.models import (
+        AnalysisResult,
+        ClusteringKey,
+        EdgeLabelDefinition,
+        GraphConfig,
+        IndexDefinition,
+        IndexKey,
+        PartitionKey,
+        PropertyDefinition,
+        UDTDefinition,
+        UDTField,
+        VertexLabelDefinition,
+    )
+
+    an = AnalysisResult(
+        graph_name="iot",
+        engine="dsg",
+        extracted_at="2026-11-09T00:00:00Z",
+        vertex_labels=[
+            VertexLabelDefinition(
+                label="reading",
+                partition_keys=[PartitionKey(name="device_id", type="Uuid")],
+                clustering_keys=[ClusteringKey(name="ts", type="Timestamp", order="Desc")],
+                properties=[PropertyDefinition(name="tags", type="Text", cardinality="SET", collection="set")],
+                count=100,
+            )
+        ],
+        edge_labels=[
+            EdgeLabelDefinition(
+                label="produced",
+                from_label="device",
+                to_label="reading",
+                properties=[PropertyDefinition(name="at", type="Timestamp")],
+                count=100,
+                table_name="device__produced__reading",
+            )
+        ],
+        udts=[UDTDefinition(name="addr", fields=[UDTField(name="zip", type="Int")])],
+        indexes=[
+            IndexDefinition(
+                kind="vertexCentric",
+                name="by_at",
+                element="edge",
+                label="produced",
+                keys=[IndexKey(name="at")],
+                direction="OUT",
+                order="desc",
+                from_label="device",
+                to_label="reading",
+            )
+        ],
+        config=GraphConfig(schema_mode="Production", olap_enabled=True),
+    )
+    assert AnalysisResult.from_dict(json.loads(json.dumps(an.to_dict()))) == an

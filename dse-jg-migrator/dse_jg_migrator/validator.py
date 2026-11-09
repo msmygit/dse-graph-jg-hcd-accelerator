@@ -43,12 +43,15 @@ class Validator:
         count_results = self._validate_counts()
         smoke_results = self._validate_smoke_tests()
 
-        report = {
+        report: dict[str, Any] = {
             "graph_name": self.analysis.graph_name,
             "count_results": count_results,
             "smoke_results": smoke_results,
-            "overall_pass": all(r["match"] for r in count_results),
+            # Never pass vacuously: an analysis with no labels (seen live when a schema was not parsed) checks nothing.
+            "overall_pass": bool(count_results) and all(r["match"] for r in count_results),
         }
+        if not count_results:
+            report["reason"] = "No vertex or edge labels in the analysis — nothing was validated."
         self._write_report(report)
         return report
 
@@ -58,37 +61,15 @@ class Validator:
 
     def _validate_counts(self) -> list[dict[str, Any]]:
         """Compare vertex and edge counts between source and target."""
-        results: list[dict[str, Any]] = []
+        labels = [("vertex", vl.label) for vl in self.analysis.vertex_labels]
+        labels += [("edge", el.label) for el in self.analysis.edge_labels]
+        return [self._count_result(kind, label) for kind, label in labels]
 
-        for vl in self.analysis.vertex_labels:
-            label = vl.label
-            src = self._get_count(self.source_gremlin_url, label, "vertex", self.source_username, self.source_password)
-            tgt = self._get_count(self.target_gremlin_url, label, "vertex", self.target_username, self.target_password)
-            results.append(
-                {
-                    "type": "vertex",
-                    "label": label,
-                    "source": src,
-                    "target": tgt,
-                    "match": src == tgt,
-                }
-            )
-
-        for el in self.analysis.edge_labels:
-            label = el.label
-            src = self._get_count(self.source_gremlin_url, label, "edge", self.source_username, self.source_password)
-            tgt = self._get_count(self.target_gremlin_url, label, "edge", self.target_username, self.target_password)
-            results.append(
-                {
-                    "type": "edge",
-                    "label": label,
-                    "source": src,
-                    "target": tgt,
-                    "match": src == tgt,
-                }
-            )
-
-        return results
+    def _count_result(self, kind: str, label: str) -> dict[str, Any]:
+        """Count one label on both sides. A failed count (-1) never matches — two failures are not a match."""
+        src = self._get_count(self.source_gremlin_url, label, kind, self.source_username, self.source_password)
+        tgt = self._get_count(self.target_gremlin_url, label, kind, self.target_username, self.target_password)
+        return {"type": kind, "label": label, "source": src, "target": tgt, "match": src == tgt and src >= 0}
 
     def _get_count(
         self,
@@ -212,7 +193,9 @@ class Validator:
         if password:
             kwargs["password"] = password
 
-        c = gremlin_client.Client(url, "g", **kwargs)
+        # DSE requires the "<graph>.g" traversal source; JanusGraph (target) uses plain "g".
+        source = f"{self.analysis.graph_name}.g" if url == self.source_gremlin_url else "g"
+        c = gremlin_client.Client(url, source, **kwargs)
         try:
             return c.submit(script, bindings).all().result()
         finally:

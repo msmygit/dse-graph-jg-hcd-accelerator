@@ -36,7 +36,92 @@ def test_map_type_bigint() -> None:
 
 
 def test_map_type_point() -> None:
-    assert map_type("Point") == "java.lang.String"
+    assert map_type("Point") == "org.janusgraph.core.attribute.Geoshape"
+
+
+def test_map_type_never_returns_types_janusgraph_rejects() -> None:
+    """JanusGraph rejects LocalDate/LocalTime/BigDecimal/BigInteger/InetAddress (verified on a live server)."""
+    from dse_jg_migrator.translator import TYPE_MAP
+
+    rejected = {
+        "java.time.LocalDate",
+        "java.time.LocalTime",
+        "java.math.BigDecimal",
+        "java.math.BigInteger",
+        "java.net.InetAddress",
+    }
+    assert not rejected & set(TYPE_MAP.values())
+    assert map_type("Date") == "java.util.Date"
+    assert map_type("Decimal") == "java.lang.Double"
+    assert map_type("Varint") == "java.lang.String"
+
+
+def test_lossy_type_mapping_is_noted(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    vl = VertexLabelDefinition(label="x")
+    vl.properties = [PropertyDefinition(name="price", type="Decimal"), PropertyDefinition(name="day", type="Date")]
+    an.vertex_labels.append(vl)
+    result = Translator(analysis=an, output_dir=str(tmp_path)).run()
+    notes = "\n".join(result.translation_notes)
+    assert "'price' (Decimal)" in notes
+    assert "'day' (Date)" in notes
+
+
+# https://docs.janusgraph.org/schema/#property-key-data-type ("Native JanusGraph Data Types"), plus primitive
+# arrays per docs/advanced-topics/serializer.md. java.time.Duration/Instant are registered internally only.
+DOCUMENTED_JG_TYPES = {
+    "java.lang.String",
+    "java.lang.Character",
+    "java.lang.Boolean",
+    "java.lang.Byte",
+    "java.lang.Short",
+    "java.lang.Integer",
+    "java.lang.Long",
+    "java.lang.Float",
+    "java.lang.Double",
+    "java.util.Date",
+    "org.janusgraph.core.attribute.Geoshape",
+    "java.util.UUID",
+    "byte[]",
+}
+
+
+def test_type_map_targets_are_documented_janusgraph_types() -> None:
+    from dse_jg_migrator.translator import DECIMAL_STRATEGIES, ENGINE_TYPE_OVERRIDES, TYPE_MAP
+
+    targets = set(TYPE_MAP.values()) | set(DECIMAL_STRATEGIES.values())
+    targets |= {cls for overrides in ENGINE_TYPE_OVERRIDES.values() for cls in overrides.values()}
+    assert targets <= DOCUMENTED_JG_TYPES, targets - DOCUMENTED_JG_TYPES
+
+
+def test_duration_resolves_per_engine() -> None:
+    """Classic stores Duration as millis (Long); Core stores CQL duration(months, days, nanos) (ISO String)."""
+    from dse_jg_migrator.translator import resolve_target_class
+
+    assert resolve_target_class("Duration", engine="classic") == "java.lang.Long"
+    assert resolve_target_class("Duration", engine="dsg") == "java.lang.String"
+    assert resolve_target_class("Text", engine="dsg") == "java.lang.String"
+
+
+def test_decimal_resolves_per_strategy() -> None:
+    from dse_jg_migrator.translator import resolve_target_class
+
+    assert resolve_target_class("Decimal", decimal_strategy="double") == "java.lang.Double"
+    assert resolve_target_class("Decimal", decimal_strategy="string") == "java.lang.String"
+
+
+def test_decimal_string_strategy_and_duration_notes_in_schema(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    vl = VertexLabelDefinition(label="x")
+    vl.properties = [PropertyDefinition(name="price", type="Decimal"), PropertyDefinition(name="ttl", type="Duration")]
+    an.vertex_labels.append(vl)
+    result = Translator(analysis=an, output_dir=str(tmp_path), decimal_strategy="string").run()
+    classes = {pk.key: pk.className for pk in result.propertyKeys}
+    assert classes == {"price": "java.lang.String", "ttl": "java.lang.String"}
+    notes = "\n".join(result.translation_notes)
+    assert "exact decimal" in notes and "ISO-8601" in notes
+    with open(os.path.join(str(tmp_path), "t-translation-report.md"), encoding="utf-8") as fh:
+        assert "**Decimal strategy:** string" in fh.read()
 
 
 def test_map_type_unknown_defaults_to_string() -> None:
@@ -249,16 +334,62 @@ def test_search_index_translates_to_mixed_index(tmp_path) -> None:  # type: igno
     assert any("TEXT" in p["value"] for p in text_key.parameters)
 
 
-def test_inverse_mv_translates_to_vertex_centric_in(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def _edge_mv_analysis(mv_keys: list[str]) -> AnalysisResult:
     an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
-    idx = IndexDefinition(
-        kind="materializedView", name="follows_inverse", element="edge", label="follows", inverse=True
-    )
+    el = EdgeLabelDefinition(label="knows", from_label="person", to_label="person")
+    el.properties = [PropertyDefinition(name="since", type="Date")]
+    an.edge_labels.append(el)
+    idx = IndexDefinition(kind="materializedView", name="knows_by_since", element="edge", label="knows")
+    idx.keys = [IndexKey(name=k) for k in mv_keys]
     an.indexes.append(idx)
-    tr = Translator(analysis=an, output_dir=str(tmp_path))
-    result = tr.run()
+    return an
+
+
+def test_edge_mv_keeps_only_edge_property_keys(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Regression: the edge MV's endpoint column (person_id) is a vertex property, not an edge key."""
+    result = Translator(analysis=_edge_mv_analysis(["person_id", "since"]), output_dir=str(tmp_path)).run()
+    ci = next(c for c in result.compositeIndexes if c.name == "knows_by_since")
+    assert ci.typeClass.endswith(".Edge")
+    assert [k.propertyKey for k in ci.keys] == ["since"]
+
+
+def test_edge_mv_without_edge_property_keys_creates_no_index(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    result = Translator(analysis=_edge_mv_analysis(["person_id"]), output_dir=str(tmp_path)).run()
+    assert not result.compositeIndexes
+    assert any("knows_by_since" in n for n in result.translation_notes)
+
+
+def _inverse_mv_analysis(keys: list[str]) -> AnalysisResult:
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    el = EdgeLabelDefinition(label="follows", from_label="user", to_label="user")
+    el.properties = [PropertyDefinition(name="followed_at", type="Timestamp")]
+    an.edge_labels.append(el)
+    an.indexes.append(
+        IndexDefinition(
+            kind="materializedView",
+            name="follows_inverse",
+            element="edge",
+            label="follows",
+            inverse=True,
+            keys=[IndexKey(name=k) for k in keys],
+        )
+    )
+    return an
+
+
+def test_keyless_inverse_mv_creates_no_index(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Live finding: JanusGraph rejects a vertex-centric index without sort keys ("Need to specify sort keys");
+    IN-direction lookups are native via adjacency lists."""
+    result = Translator(analysis=_inverse_mv_analysis([]), output_dir=str(tmp_path)).run()
+    assert not result.vertexCentricEdgeIndexes
+    assert any("follows_inverse" in n and "adjacency lists" in n for n in result.translation_notes)
+
+
+def test_inverse_mv_with_edge_property_key_translates_to_vertex_centric_in(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    result = Translator(analysis=_inverse_mv_analysis(["user_id", "followed_at"]), output_dir=str(tmp_path)).run()
     vc = next(vc for vc in result.vertexCentricEdgeIndexes if vc.name == "follows_inverse")
     assert vc.direction == "IN"
+    assert vc.propertyKeys == ["followed_at"]  # the endpoint vertex key is dropped
 
 
 # ---------------------------------------------------------------------------
@@ -291,3 +422,34 @@ def test_translation_report_written(tmp_path) -> None:  # type: ignore[no-untype
     content = open(report_file, encoding="utf-8").read()
     assert "## Vertex Labels" in content
     assert "person" in content
+
+
+def _udt_tuple_analysis() -> AnalysisResult:
+    an = AnalysisResult(graph_name="t", engine="dsg", extracted_at="2026-01-01T00:00:00Z")
+    vl = VertexLabelDefinition(label="employee")
+    vl.properties = [
+        PropertyDefinition(name="home_address", type="frozen(typeOf('address'))"),
+        PropertyDefinition(name="salary_range", type="tupleOf(Int, Int)"),
+    ]
+    an.vertex_labels.append(vl)
+    an.udts.append(UDTDefinition(name="address", fields=[UDTField(name="street", type="Text")]))
+    return an
+
+
+def test_udt_property_writes_to_udt_keys_not_a_fallback_key(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Live finding: an unused String key `home_address` was created next to `address_*`; its data was lost."""
+    keys = {pk.key for pk in Translator(analysis=_udt_tuple_analysis(), output_dir=str(tmp_path)).run().propertyKeys}
+    assert "home_address" not in keys and "address_street" in keys
+    json_keys = {
+        pk.key
+        for pk in Translator(analysis=_udt_tuple_analysis(), output_dir=str(tmp_path), udt_strategy="json")
+        .run()
+        .propertyKeys
+    }
+    assert "address" in json_keys and "home_address" not in json_keys
+
+
+def test_tuple_property_is_a_json_string_with_note(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    result = Translator(analysis=_udt_tuple_analysis(), output_dir=str(tmp_path)).run()
+    assert {pk.key: pk.className for pk in result.propertyKeys}["salary_range"] == "java.lang.String"
+    assert any("salary_range" in n and "JSON array" in n for n in result.translation_notes)

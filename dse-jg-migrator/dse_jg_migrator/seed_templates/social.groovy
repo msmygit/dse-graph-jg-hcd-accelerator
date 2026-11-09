@@ -46,14 +46,29 @@ g = {{GRAPH_NAME}}.traversal()
     .property('user_id', UUID.randomUUID())
     .property('username', "user_${it}")
     .property('email', "user${it}@example.com")
-    .property('joined_at', new Date())
+    .property('roles', it % 5 == 0 ? ['reader', 'admin'] : ['reader'])
+    .property('joined_at', java.time.Instant.now())
     .iterate()
 }
 
-users = g.V().hasLabel('user').limit({{EDGE_COUNT}}).toList()
-users.eachWithIndex { u, i ->
-  if (i + 1 < users.size()) {
-    g.addE('follows').from(u).to(users.get(i + 1))
-      .property('followed_at', new Date()).iterate()
+users = g.V().hasLabel('user').toList()
+n = users.size()
+// {{EDGE_COUNT}} distinct follows edges: user k follows user k + 1 + k.intdiv(n) (mod n). DSG keys an edge row by
+// its (out, in) pair, so pairs must be unique — guaranteed while {{EDGE_COUNT}} <= n * (n - 1).
+if (n > 1) {
+  {{EDGE_COUNT}}.times { k ->
+    g.addE('follows').from(users.get(k % n)).to(users.get((k % n + 1 + k.intdiv(n) % (n - 1)) % n))
+      .property('followed_at', java.time.Instant.now()).iterate()
   }
+}
+
+// One post per user, linked by an authored edge. (Each blank-line-separated block is a separate request,
+// so this block re-reads the users instead of reusing `users`.)
+g.V().hasLabel('user').toList().each { u ->
+  p = g.addV('post')
+    .property('post_id', UUID.randomUUID())
+    .property('content', "Hello from ${g.V(u).values('username').next()}")
+    .property('created_at', java.time.Instant.now())
+    .next()
+  g.addE('authored').from(u).to(p).property('published_at', java.time.Instant.now()).iterate()
 }

@@ -12,6 +12,30 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn
 
 console = Console()
 
+# Shared by translate, migrate and run-all: migrate writes exactly the keys (and value classes) translate created,
+# so both must receive the same values (run-all passes one value of each to both).
+udt_strategy_option = click.option(
+    "--udt-strategy",
+    type=click.Choice(["flat", "json"]),
+    default="flat",
+    show_default=True,
+    help="UDT strategy: flat explodes UDT fields into <udt>_<field> keys; json serialises as one JSON string.",
+)
+map_strategy_option = click.option(
+    "--map-strategy",
+    type=click.Choice(["flat", "json"]),
+    default="flat",
+    show_default=True,
+    help="mapOf() strategy: flat produces parallel <prop>_key/<prop>_value LISTs; json one JSON string.",
+)
+decimal_strategy_option = click.option(
+    "--decimal-strategy",
+    type=click.Choice(["double", "string"]),
+    default="double",
+    show_default=True,
+    help="Decimal storage: double (numeric; inexact values beyond ~15 digits are counted) or string (exact).",
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -349,23 +373,15 @@ def analyse(
     type=click.Path(exists=True),
     help="Path to <graph-name>-analysis.json produced by the analyse command.",
 )
-@click.option(
-    "--udt-strategy",
-    type=click.Choice(["flat", "json"]),
-    default="flat",
-    help="UDT strategy: flat (default) explodes UDT fields; json serialises as JSON string.",
-)
-@click.option(
-    "--map-strategy",
-    type=click.Choice(["flat", "json"]),
-    default="flat",
-    help="mapOf() strategy: flat (default) produces parallel _key/_value LIST; json as JSON string.",
-)
+@udt_strategy_option
+@map_strategy_option
+@decimal_strategy_option
 @click.option("--output-dir", default=".", show_default=True)
 def translate(
     analysis_path: str,
     udt_strategy: str,
     map_strategy: str,
+    decimal_strategy: str,
     output_dir: str,
 ) -> None:
     """Translate DSE Graph schema to JanusGraph JSON schema."""
@@ -376,6 +392,7 @@ def translate(
         udt_strategy=udt_strategy,
         map_strategy=map_strategy,
         output_dir=output_dir,
+        decimal_strategy=decimal_strategy,
     )
     analysis = tr.load_analysis(analysis_path)
     tr.analysis = analysis
@@ -415,12 +432,21 @@ def translate(
 )
 @click.option("--username", default=None)
 @click.option("--password", default=None, hide_input=True)
+@click.option(
+    "--index-timeout",
+    "index_timeout_min",
+    type=click.IntRange(min=0),
+    default=30,
+    show_default=True,
+    help="Minutes to wait for composite indexes to be enabled before proceeding.",
+)
 def init_target(
     target_gremlin_url: str,
     schema_path: str,
     mode: str,
     username: str | None,
     password: str | None,
+    index_timeout_min: int,
 ) -> None:
     """Apply JanusGraph schema to the target HCD/JanusGraph cluster."""
     from dse_jg_migrator.initialiser import Initialiser
@@ -431,18 +457,20 @@ def init_target(
         mode=mode,
         username=username,
         password=password,
+        index_timeout_s=index_timeout_min * 60,
     )
     console.print(f"[bold]Initialising target:[/bold] {target_gremlin_url}")
     with console.status("Applying schema to target cluster..."):
         result = init.run()
 
+    console.print(f"  Created: {len(result.get('created', []))} elements")
     if result.get("errors"):
-        console.print("[yellow]⚠ Some schema elements failed to initialise:[/yellow]")
+        # Exit non-zero: migrating into an incomplete schema (schema.default=none) fails every batch (found live).
+        console.print("[red]✗[/red] Schema initialisation failed:")
         for err in result["errors"]:
             console.print(f"  [red]✗[/red] {err}")
-    else:
-        console.print("[green]✓[/green] Schema initialised successfully.")
-    console.print(f"  Created: {len(result.get('created', []))} elements")
+        raise SystemExit(1)
+    console.print("[green]✓[/green] Schema initialised successfully.")
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +493,9 @@ def init_target(
 @click.option("--gremlin-batch", default=200, show_default=True)
 @click.option("--write-batch", default=100, show_default=True)
 @click.option("--parallel-labels", default=1, show_default=True)
+@udt_strategy_option
+@map_strategy_option
+@decimal_strategy_option
 @click.option("--output-dir", default=".", show_default=True)
 def migrate(
     analysis_path: str,
@@ -476,9 +507,16 @@ def migrate(
     gremlin_batch: int,
     write_batch: int,
     parallel_labels: int,
+    udt_strategy: str,
+    map_strategy: str,
+    decimal_strategy: str,
     output_dir: str,
 ) -> None:
-    """Migrate vertex and edge data from DSE Graph to JanusGraph."""
+    """Migrate vertex and edge data from DSE Graph to JanusGraph.
+
+    Exits non-zero if any batch still failed after retries; re-running resumes and retries only the elements
+    that are not yet migrated.
+    """
     from dse_jg_migrator.migrator import Migrator
     from dse_jg_migrator.translator import Translator
 
@@ -496,6 +534,9 @@ def migrate(
         write_batch=write_batch,
         parallel_labels=parallel_labels,
         output_dir=output_dir,
+        decimal_strategy=decimal_strategy,
+        udt_strategy=udt_strategy,
+        map_strategy=map_strategy,
     )
 
     console.print(f"[bold]Migrating graph:[/bold] {analysis.graph_name}")
@@ -511,6 +552,18 @@ def migrate(
 
     total_v = sum(stats.get("vertices", {}).values())
     total_e = sum(stats.get("edges", {}).values())
+    if stats.get("already_migrated"):
+        console.print(f"  Resumed: {stats['already_migrated']:,} element(s) already migrated were skipped")
+    for key, count in stats.get("lossy_decimals", {}).items():
+        console.print(f"[yellow]⚠[/yellow] {count:,} '{key}' Decimal value(s) are inexact as Double")
+    for label, count in stats.get("missing_endpoints", {}).items():
+        console.print(f"[yellow]⚠[/yellow] {count:,} '{label}' edge(s) skipped: endpoint vertex not migrated")
+    if stats.get("errors"):
+        console.print(f"[red]✗[/red] Migration incomplete: {total_v:,} vertices, {total_e:,} edges written")
+        for err in stats["errors"]:
+            console.print(f"  [red]✗[/red] {err}")
+        console.print("  Re-run migrate to retry; already-migrated elements are skipped.")
+        raise SystemExit(1)
     console.print(f"[green]✓[/green] Migration complete: {total_v:,} vertices, {total_e:,} edges")
 
 
@@ -555,6 +608,8 @@ def validate(
     total = len(report["count_results"])
     status_icon = "[green]✓[/green]" if report["overall_pass"] else "[red]✗[/red]"
     console.print(f"{status_icon} Validation: {passes}/{total} count checks passed")
+    if report.get("reason"):
+        console.print(f"  [red]✗[/red] {report['reason']}")
     if not report["overall_pass"]:
         raise SystemExit(1)
 
@@ -614,8 +669,9 @@ def report(graph_name: str, output_dir: str) -> None:
     type=click.Choice(["food", "social", "iot", "enterprise"]),
     help="Template to use when --seed is set.",
 )
-@click.option("--udt-strategy", type=click.Choice(["flat", "json"]), default="flat")
-@click.option("--map-strategy", type=click.Choice(["flat", "json"]), default="flat")
+@udt_strategy_option
+@map_strategy_option
+@decimal_strategy_option
 @click.option("--cql-fetch-size", default=1000, show_default=True)
 @click.option("--write-batch", default=100, show_default=True)
 @click.pass_context
@@ -637,6 +693,7 @@ def run_all(  # noqa: PLR0913
     template: str,
     udt_strategy: str,
     map_strategy: str,
+    decimal_strategy: str,
     cql_fetch_size: int,
     write_batch: int,
 ) -> None:
@@ -717,6 +774,7 @@ def run_all(  # noqa: PLR0913
         analysis_path=analysis_path,
         udt_strategy=udt_strategy,
         map_strategy=map_strategy,
+        decimal_strategy=decimal_strategy,
         output_dir=output_dir,
     )
 
@@ -728,6 +786,7 @@ def run_all(  # noqa: PLR0913
         mode="gremlin-script",
         username=None,
         password=None,
+        index_timeout_min=30,
     )
 
     # 4. Migrate
@@ -742,6 +801,9 @@ def run_all(  # noqa: PLR0913
         gremlin_batch=200,
         write_batch=write_batch,
         parallel_labels=1,
+        udt_strategy=udt_strategy,
+        map_strategy=map_strategy,
+        decimal_strategy=decimal_strategy,
         output_dir=output_dir,
     )
 

@@ -130,7 +130,7 @@ The Docker Compose setup includes the following configuration.
 
 | Service | Setting | Value |
 |---|---|---|
-| HCD service node | Image | `cp.icr.io/cp/cpd/ibm-datastax-hcd/hcd:2.0.8-ubi` |
+| HCD service node | Image | `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` |
 | HCD service node | Memory limit | 3 GB |
 | HCD service node | Max heap size | 1536 MB |
 | HCD service node | Cluster name | `hcd-cluster` |

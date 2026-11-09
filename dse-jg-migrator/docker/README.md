@@ -9,19 +9,60 @@ The E2E stack runs five services:
 | `hcd` | `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` | Target CQL store | 9042 |
 | `opensearch` | `opensearchproject/opensearch:3` | JanusGraph index backend | 9200 |
 | `janusgraph` | `janusgraph/janusgraph:latest` | Target graph engine | 8182 |
-| `dse-graph-source` | `datastax/dse-server:6.8.65-ubi7` | Source DSE Graph | 9043 (CQL), 8183 (Gremlin) |
+| `dse-graph-source` | `datastax/dse-server:6.9.26-ubi` (6.8: `6.8.65-ubi7` on native amd64) | Source DSE Graph | 9043 (CQL), 8183 (Gremlin) |
 | `janusgraph-visualizer` | `janusgraph/janusgraph-visualizer:latest` | Graph UI (optional) | 3000, 3001 |
 
 ---
 
 ## Prerequisites
 
+### 0. Container runtime — Docker or Podman
+
+Either works; every command below is written with `docker`. If you use Podman, replace
+`docker` with `podman` (or alias it: `alias docker=podman`) and `docker compose` with
+`podman compose` (or `podman-compose`). The E2E test suite auto-detects the runtime
+(`docker` first, then `podman`); force one with `CONTAINER_RUNTIME=podman|docker`.
+
+```bash
+# Pick whichever is installed
+if command -v docker >/dev/null 2>&1; then RT=docker; else RT=podman; fi
+if $RT compose version >/dev/null 2>&1; then COMPOSE="$RT compose"; else COMPOSE="${RT}-compose"; fi
+echo "runtime=$RT compose=$COMPOSE"
+```
+
+On macOS, Podman runs containers in a VM. Give it enough memory and CPUs **before** starting the stack
+(a container cannot have more CPUs than the VM, and the DSE service is limited to `cpus: 8`):
+
+```bash
+podman machine stop
+podman machine set --memory 20480 --cpus 10   # MiB; HCD (6 GB) + DSE (6 GB) + JanusGraph + OpenSearch
+podman machine start                          # then re-apply the QEMU binfmt registration (caveat 1 below)
+```
+
+`podman-compose` does not reliably honour `depends_on: condition: service_healthy`, and `up <service>`
+also (re)creates that service's dependencies — even healthy ones. Use `docker/up.sh`, which starts each
+service with `--no-deps` in dependency order and blocks until its healthcheck passes:
+
+```bash
+./docker/up.sh                          # dse-graph-source (in the background) + hcd → opensearch → janusgraph
+./docker/up.sh hcd opensearch           # only the named services, in the given order
+./docker/up.sh janusgraph-visualizer    # optional UI, after janusgraph
+```
+
+It skips services that are already healthy, waits on (never restarts) a service that is still starting, and
+prints the last log lines if a container exits. Override the tools with `COMPOSE=…` / `RUNTIME=…` and the
+per-service wait with `HEALTH_TIMEOUT=<seconds>` (default 1800). It works with Docker Compose v2 too.
+
+A container keeps the healthcheck it was **created** with: after editing the compose file, recreate the
+service (`podman-compose -f docker/docker-compose-e2e.yml up -d --no-deps --force-recreate <service>`);
+`podman restart` keeps the old configuration.
+
 ### 1. IBM Container Registry authentication
 
 The HCD image is gated behind IBM Entitled Registry. You must authenticate before pulling:
 
 ```bash
-docker login cp.icr.io --username cp
+docker login cp.icr.io --username cp      # or: podman login cp.icr.io --username cp
 # When prompted for Password, paste your IBM Entitled Registry entitlement key.
 # Key available at: https://myibm.ibm.com/products-services/containerlibrary
 ```
@@ -35,31 +76,62 @@ docker pull cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi
 
 | Resource | Minimum |
 |----------|---------|
-| Docker memory allocation | **≥ 8 GB** |
+| Docker Desktop / Podman machine memory | **≈ 20 GiB** (HCD and DSE are each capped at 6 GB; DSE was OOM-killed at 2 GB and 4 GB) |
+| Podman machine CPUs | **≥ 10** (the DSE service has `cpus: 8`) |
 | Disk space | **≥ 15 GB** free |
-| Platform | `linux/amd64` (native) or Apple Silicon with Rosetta emulation |
+| Platform | `linux/amd64` (native) or Apple Silicon with emulation (Rosetta / QEMU) |
 
 ---
 
 ## Apple Silicon (M-series) caveat
 
-> HCD 2.x (`linux/amd64`) runs under Rosetta emulation on Apple M-series chips.
-> Enable Rosetta emulation in Docker Desktop → Settings → Features in Development.
-> Allocate **≥ 8 GB RAM**. Expect **~2× longer startup time** vs native `amd64`.
+HCD 2.x and DSE 6.8/6.9 are `linux/amd64` images. Findings from running them on an M-series Mac under Podman
+(each verified on a live stack):
+
+1. **Use QEMU user-mode emulation, not Rosetta.** HCD's glibc requires x86-64-v3 CPU features that
+   Rosetta does not provide. Re-apply after **every** `podman machine start` (the setting does not persist):
+
+   ```bash
+   podman machine ssh 'echo -1 | sudo tee /proc/sys/fs/binfmt_misc/rosetta'
+   podman machine ssh 'sudo sh -c "cat /usr/lib/binfmt.d/qemu-x86_64-static.conf > /proc/sys/fs/binfmt_misc/register"'
+   podman machine ssh 'head -2 /proc/sys/fs/binfmt_misc/qemu-x86_64'    # must print: enabled
+   ```
+
+2. **Disable jemalloc.** HCD's `cassandra` launcher sets `LD_PRELOAD=libjemalloc.so`, which segfaults the
+   JVM under QEMU. The compose file sets `CASSANDRA_LIBJEMALLOC=-` (and `QEMU_CPU=max`) on the HCD service.
+3. **HCD's `cassandra.yaml` is not mounted.** `hcd-dev/cassandra.yaml` binds `rpc_address: localhost`,
+   which makes CQL unreachable from other containers. Without the mount, the image's auto-configuration
+   sets `rpc_address: 0.0.0.0`. Default credentials are `cassandra` / `cassandra`.
+4. **DSE starts with `-g -s`** (Graph and Search on top of core Cassandra) and `cpus: 8`. Search is needed by
+   `searchIndex()` (the `food` and `enterprise` templates and the E2E test); `social` and `iot` need Graph only.
+5. **DSE is slow to boot** under emulation (several minutes). A published host port is always open under
+   Podman, so check the container log (`/var/log/cassandra/system.log`) or `docker ps` health rather
+   than probing the port. The healthcheck runs `cqlsh` (`nodetool status` reported `UN` while CQL still
+   refused connections).
+6. **Use DSE 6.9 under QEMU, not 6.8.** DSE 6.8 runs on Java 8, whose JVM wedged at a safepoint on every boot
+   (5 attempts: all logs incl. `gc.log` stop at a different startup step, the JVM ignores `SIGQUIT`, no OOM;
+   more CPUs and dropping Search did not help). DSE 6.9.26 (Java 11) boots in ~3.5 minutes, so the compose file
+   uses it. To test a DSE 6.8 source, use a native `amd64` host and `datastax/dse-server:6.8.65-ubi7`.
+7. **OpenSearch** runs with security disabled and `DISABLE_INSTALL_DEMO_CONFIG=true`, so no admin password is
+   set or committed. Enable the security plugin (and supply credentials via the environment) for anything shared.
+
+Expect roughly 2× (HCD) to much longer (DSE) startup versus native `amd64`.
 
 ---
 
 ## Starting the stack
 
 ```bash
-# From the dse-jg-migrator/ directory:
-docker compose -f docker/docker-compose-e2e.yml up -d
+# From the dse-jg-migrator/ directory (Docker Compose v2 or Podman):
+./docker/up.sh
 
-# Verify all services are healthy (may take 2-5 minutes on first start):
-docker compose -f docker/docker-compose-e2e.yml ps
+# Or, with Docker Compose v2, which honours the healthcheck dependencies itself:
+docker compose -f docker/docker-compose-e2e.yml up -d
+docker compose -f docker/docker-compose-e2e.yml ps   # may take several minutes on first start
 ```
 
-All five services must show `(healthy)` before running migrations.
+`hcd`, `opensearch`, `janusgraph` and `dse-graph-source` must show `(healthy)` before running migrations.
+The optional `janusgraph-visualizer` has no healthcheck.
 
 ---
 
