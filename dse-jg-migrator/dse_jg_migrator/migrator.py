@@ -173,6 +173,7 @@ class Migrator:
         self._lossy_decimals: dict[str, int] = {}
         self._missing_endpoints: dict[str, int] = {}
         self._skipped = 0
+        self._batch_offsets: dict[tuple[str, str], int] = {}
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public API
@@ -184,13 +185,17 @@ class Migrator:
         Writes to: target JanusGraph, the SQLite checkpoint and the audit log. Vertex labels go first; edges start
         only when every vertex label is complete. A label with a batch that failed after all retries is left
         incomplete, so re-running ``migrate`` retries it — elements already in ``id_map``/``edge_map`` are skipped.
+        The audit log lives as long as the checkpoint: a fresh checkpoint starts a fresh log, a resumed one appends.
         """
         self._failed = {}
         self._errors = []
         self._lossy_decimals = {}
         self._missing_endpoints = {}
         self._skipped = 0
+        self._batch_offsets = {}
         conn = self._init_checkpoint(self.checkpoint_db)
+        if self._checkpoint_is_empty(conn):
+            self._start_audit_log()
         target_client = self._make_gremlin_client(self.target_gremlin_url)
         stats: dict[str, Any] = {"vertices": {}, "edges": {}, "errors": self._errors}
 
@@ -294,9 +299,6 @@ class Migrator:
                 if len(write_buf) >= self.write_batch:
                     new_ids = self._flush_vertex_batch(target_client, write_buf)
                     self._persist_id_map(conn, write_buf, new_ids)
-                    self._append_audit(
-                        "vertex", label, total, len(write_buf), len(new_ids), len(write_buf) - len(new_ids)
-                    )
                     total += len(new_ids)
                     write_buf.clear()
             if write_buf:
@@ -486,7 +488,11 @@ class Migrator:
             for label, props in buf
         ]
         bindings = {"rows": rows, "geo": sorted(self._geo_keys)}
-        return [str(r) for r in self._submit_with_retry(client, _ADD_VERTICES, bindings, "vertex", buf[0][0], len(buf))]
+        new_ids = [
+            str(r) for r in self._submit_with_retry(client, _ADD_VERTICES, bindings, "vertex", buf[0][0], len(buf))
+        ]
+        self._audit_batch("vertex", buf[0][0], len(buf), len(new_ids))
+        return new_ids
 
     def _submit_with_retry(
         self,
@@ -852,7 +858,9 @@ class Migrator:
             for label, out_id, in_id, props in buf
         ]
         bindings = {"rows": rows, "geo": sorted(self._geo_keys)}
-        return [str(r) for r in self._submit_with_retry(client, _ADD_EDGES, bindings, "edge", buf[0][0], len(buf))]
+        new_ids = [str(r) for r in self._submit_with_retry(client, _ADD_EDGES, bindings, "edge", buf[0][0], len(buf))]
+        self._audit_batch("edge", buf[0][0], len(buf), len(new_ids))
+        return new_ids
 
     # ──────────────────────────────────────────────────────────────────────────
     # Checkpoint / ID map helpers
@@ -950,6 +958,25 @@ class Migrator:
     # ──────────────────────────────────────────────────────────────────────────
     # Audit log
     # ──────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _checkpoint_is_empty(conn: sqlite3.Connection) -> bool:
+        """True when nothing was migrated or completed yet, i.e. this run is not resuming an earlier one."""
+        return not any(
+            conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()  # noqa: S608 — fixed table names, no input
+            for table in ("progress", "id_map", "edge_map")
+        )
+
+    def _start_audit_log(self) -> None:
+        """Empty the audit log so a new migration does not report the batches of an earlier one."""
+        with open(os.path.join(self.output_dir, self.audit_log), "w", encoding="utf-8"):
+            pass
+
+    def _audit_batch(self, kind: str, label: str, size: int, migrated: int) -> None:
+        """Audit one written batch; ``batch_start`` counts the elements of ``(kind, label)`` sent so far this run."""
+        start = self._batch_offsets.get((kind, label), 0)
+        self._batch_offsets[(kind, label)] = start + size
+        self._append_audit(kind, label, start, size, migrated, size - migrated)
 
     def _append_audit(
         self,

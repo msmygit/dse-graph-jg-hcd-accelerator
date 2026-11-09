@@ -1,6 +1,6 @@
 # DSE Graph → JanusGraph / HCD Migration Accelerator — Implementation Plan
 
-> **Status:** 🟡 Implemented, not fully verified — ST-1 is done; ST-0, ST-2 … ST-9 are implemented and unit-tested (≥ 80% coverage per module, no coverage omissions) but have **never been run against a real DSE/HCD/JanusGraph cluster**. Remaining work: run the Docker E2E stack and fix what it finds.
+> **Status:** 🟢 Implemented and verified live — every sub-task (ST-0 … ST-9) is `[x] done`, verified on 2026-11-09 against DSE 6.9.26 (Core + Classic) → JanusGraph + HCD 2.0.8 (authentication enforced) + OpenSearch 3 on Podman (Apple Silicon, QEMU): every CLI stage on five graphs with field-by-field value checks, checkpoint resume, and `tests/e2e` 4/4 run twice. Open items: the assessment report does not yet have the per-index Index Analysis and Cluster Overview sections of Step 0.3; DSE 6.8 could not be booted under QEMU (its parser is covered by a captured fixture); see `dse-jg-migrator/CHANGELOG.md` → Known limitations.
 > **Status legend:** `[x] done` = implemented and verified end-to-end · `[~]` = implemented and unit-tested, live verification outstanding · `[ ] pending`.
 > **Goal:** Build a lightweight CLI tool that (0) optionally seeds a DSE Graph cluster with a representative sample workload for demo/testing, (1) runs a non-destructive pre-migration compatibility assessment, (2) analyses a live DSE Graph cluster, (3) generates a migration plan, and (4) executes the schema + data migration to JanusGraph with HCD as its CQL backend.
 > **Sources:** `bdp/dse-graph/`, `dse-docs-new/modules/graph/`, `janusgraph/`, project structure exploration (November 2026).
@@ -1982,6 +1982,14 @@ Wire all modules into a cohesive `click`-based CLI with clear command names, hel
    - ℹ️ UDT `address` (flat strategy): Exploded to `address_street`, `address_zip` property keys. Switch to `--udt-strategy json` to store as a single JSON string instead.
    - ℹ️ `person.badge` (mapOf): Flat strategy applied; migrated as `badge_key` LIST + `badge_value` LIST.
    ```
+
+   > **Implementation finding (#7):** no pipeline stage records phase durations, so the standalone `report` reads
+   > each phase's status from its output files instead: the assessment's risk and RED count
+   > (`<graph>-assessment-report.json`), the analysis and schema JSON files, failed batches in the audit log, and the
+   > validation report's overall result. A phase without output reads "— not run"; Init Target writes no file and
+   > counts as done once the target accepted migrated data. The Duration column appears only when stats are passed.
+   > Migration counts are one total per label, summed from the audit log's batch lines (step 9 of Sub-Task 5): every
+   > written batch, including failed ones, is audited, and a fresh checkpoint starts a fresh log.
 
 ### Relevant Context
 - `click` and `rich` are both well-established Python CLI libraries with no heavy transitive dependencies.
