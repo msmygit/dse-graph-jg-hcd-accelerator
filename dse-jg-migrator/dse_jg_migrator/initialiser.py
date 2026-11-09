@@ -151,7 +151,7 @@ class Initialiser:
 
     def _submit(self, script: str, bindings: dict[str, Any] | None = None) -> Any:  # noqa: ANN401
         """Submit a Gremlin management script to the target JanusGraph cluster."""
-        from gremlin_python.driver import client as gremlin_client
+        from dse_jg_migrator.gremlin_io import open_gremlin_client
 
         kwargs: dict[str, Any] = {}
         if self._username:
@@ -159,7 +159,7 @@ class Initialiser:
         if self._password:
             kwargs["password"] = self._password
 
-        c = gremlin_client.Client(self.target_gremlin_url, "g", **kwargs)
+        c = open_gremlin_client(self.target_gremlin_url, "g", **kwargs)
         try:
             return c.submit(script, bindings or {}).all().result()
         finally:

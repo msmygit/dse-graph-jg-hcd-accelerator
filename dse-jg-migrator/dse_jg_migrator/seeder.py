@@ -66,11 +66,11 @@ class Seeder:
         """Execute the seed. Returns a SeederResult with counts and next-step hints."""
         groovy = self._load_template()
         groovy = self._render_params(groovy)
-        from gremlin_python.driver import client as gremlin_client
+        from dse_jg_migrator.gremlin_io import open_gremlin_client
 
         # `system.*` statements run on the plain "g" source; everything after graph creation must
         # use the "<graph>.g" alias (DSE does not keep `schema = <graph>.schema()` between requests).
-        system_client = gremlin_client.Client(self.gremlin_url, "g")
+        system_client = open_gremlin_client(self.gremlin_url, "g")
         graph_client = None
         totals: tuple[int | None, int | None] = (None, None)
         try:
@@ -82,7 +82,7 @@ class Seeder:
                     system_client.submit(statement).all().result()
                     continue
                 if graph_client is None:
-                    graph_client = gremlin_client.Client(self.gremlin_url, f"{self.graph_name}.g")
+                    graph_client = open_gremlin_client(self.gremlin_url, f"{self.graph_name}.g")
                 for chunk in self._chunks(statement):
                     try:
                         graph_client.submit(chunk).all().result()

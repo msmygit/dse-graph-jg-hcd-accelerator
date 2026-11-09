@@ -123,6 +123,8 @@ Found by running against live DSE 6.8/6.9 sources and a live JanusGraph + HCD + 
 - `--decimal-strategy`, `--udt-strategy` and `--map-strategy` must match between `translate` and `migrate` when they are run separately (`run-all` passes one value of each to both); a mismatch makes the affected batches fail and be reported.
 - `requirements.lock` was compiled on Python 3.13; re-resolving on Python 3.12.9 produced an identical lock, and the full unit suite, `mypy --strict` and ruff pass on 3.12.9 too.
 - `.secrets.baseline` records one known false positive: `keystore_password` in the reference `hcd-dev/cassandra.yaml` (vendor default). `docker/janusgraph-hcd.properties` no longer carries the default `cassandra` password (AGENTS.md §6.1); it is a placeholder supplied at deploy time.
+- (#5) With the source unreachable, commands printed `RuntimeError: Cannot run the event loop while another loop is running` tracebacks and "Unclosed client session" warnings: gremlin-python orphans the transport of a failed connect and GC closed it inside another event loop. All Gremlin clients now open through `gremlin_io.open_gremlin_client()`, whose transport closes itself when its connect fails.
+- (#5) `assess` / `analyse` / `run-all` printed DSE's full Java stack trace (`Variable 'a' … is unknown`) for the OLAP capability probe, which fails by design when OLAP is off. `gremlin_io.quiet_gremlin_errors()` mutes gremlin-python's log for those probes only; results are unchanged.
 
 ---
 

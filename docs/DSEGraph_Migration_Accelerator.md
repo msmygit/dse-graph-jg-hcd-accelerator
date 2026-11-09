@@ -1052,6 +1052,7 @@ Create the Python project structure, dependency manifest, and development enviro
    │   ├── reporter.py               # Migration report generation
    │   ├── models.py                 # Dataclasses for schema elements
    │   ├── config.py                 # Configuration dataclasses
+   │   ├── gremlin_io.py             # Shared Gremlin client factory (added after ST-9, see ST-1 step 6)
    │   ├── seeder.py                 # NEW (ST-9): Sample workload seeder
    │   └── seed_templates/           # NEW (ST-9): Built-in Gremlin template files
    │       ├── food.groovy
@@ -1069,6 +1070,7 @@ Create the Python project structure, dependency manifest, and development enviro
    │   │   ├── test_migrator.py
    │   │   ├── test_validator.py
    │   │   ├── test_seeder.py        # NEW (ST-9)
+   │   │   ├── test_gremlin_io.py
    │   │   └── test_models.py
    │   ├── fixtures/
    │   └── e2e/
@@ -1103,6 +1105,13 @@ Create the Python project structure, dependency manifest, and development enviro
 3. Define `models.py` dataclasses (see [Sub-Task 2](#sub-task-2--dse-graph-analyser) for field inventory).
 4. Define `config.py` connection configuration dataclasses.
 5. Implement stub `cli.py` with top-level command groups: `seed`, `assess`, `analyse`, `translate`, `init-target`, `migrate`, `validate`, `report`, `run-all`.
+6. **`gremlin_io.py` (added later, user-approved, branch `fix/quiet-cli-noise`).** Every module opens Gremlin clients
+   through `open_gremlin_client()`. Rationale (found live): when a WebSocket connect fails, gremlin-python orphans the
+   transport with its own event loop; garbage collection later closes it while another loop runs, printing
+   `RuntimeError: Cannot run the event loop while another loop is running` and "Unclosed client session". The helper's
+   transport closes itself when its connect fails. `quiet_gremlin_errors()` mutes gremlin-python's own ERROR log
+   (a full Java stack trace) around requests that fail by design — the OLAP `a.V()` capability probes in
+   `assessor.py` and `analyser.py`; all other requests log as before.
 
 ### Relevant Context
 - No existing Python code in the repo; this is greenfield.

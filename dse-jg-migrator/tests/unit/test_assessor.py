@@ -465,3 +465,22 @@ def test_readable_schema_emits_no_cf_006() -> None:
     with patch.object(assessor, "_gremlin_submit", return_value=["schema.vertexLabel('person').create()"]):
         result = assessor.run()
     assert not any(f.rule_id == "CF-006" for f in result.findings)
+
+
+def test_olap_probe_does_not_log_the_expected_server_error() -> None:
+    """The 'a' OLAP probe fails by design without OLAP; gremlin-python must not print that error (found live)."""
+    import logging
+
+    states: list[bool] = []
+
+    def submit(script: str, bindings: object = None) -> list[int]:
+        if script.startswith("a."):
+            states.append(logging.getLogger("gremlinpython").disabled)
+            raise RuntimeError("Variable 'a' is unknown")
+        return []
+
+    assessor = _make_assessor()
+    with patch.object(assessor, "_gremlin_submit", side_effect=submit):
+        assessor._assess_olap()
+    assert states == [True]
+    assert logging.getLogger("gremlinpython").disabled is False

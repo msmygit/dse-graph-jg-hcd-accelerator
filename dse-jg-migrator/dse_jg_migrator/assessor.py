@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from dse_jg_migrator.compatibility_rules import RULES_BY_ID, Category, Severity
+from dse_jg_migrator.gremlin_io import quiet_gremlin_errors
 from dse_jg_migrator.models import AssessmentFinding, AssessmentResult
 
 
@@ -103,14 +104,14 @@ class Assessor:
 
         Reads from: source DSE Gremlin server.
         """
-        from gremlin_python.driver import client as gremlin_client
+        from dse_jg_migrator.gremlin_io import open_gremlin_client
 
         kwargs: dict[str, Any] = {}
         if self._username and self._password:
             kwargs["username"] = self._username
             kwargs["password"] = self._password
 
-        c = gremlin_client.Client(self.gremlin_url, f"{self.graph_name}.g", **kwargs)
+        c = open_gremlin_client(self.gremlin_url, f"{self.graph_name}.g", **kwargs)
         try:
             result_set = c.submit(script, bindings or {})
             return result_set.all().result()
@@ -339,7 +340,8 @@ class Assessor:
 
         # Probe for OLAP 'a' traversal source
         try:
-            result = self._gremlin_submit("a.V().limit(0).count()")
+            with quiet_gremlin_errors():  # fails by design when OLAP is not configured
+                result = self._gremlin_submit("a.V().limit(0).count()")
             if result is not None:
                 findings.append(self._make_finding("QP-005", "OLAP traversal source 'a' responded to probe."))
         except Exception:  # noqa: BLE001, S110
@@ -356,7 +358,8 @@ class Assessor:
         findings: list[AssessmentFinding] = []
 
         try:
-            result = self._gremlin_submit("a.V().limit(0).count()")
+            with quiet_gremlin_errors():  # fails by design when OLAP is not configured
+                result = self._gremlin_submit("a.V().limit(0).count()")
             if result is not None:
                 findings.append(
                     self._make_finding(

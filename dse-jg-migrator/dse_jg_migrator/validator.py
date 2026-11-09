@@ -185,7 +185,7 @@ class Validator:
         password: str | None,
     ) -> Any:  # noqa: ANN401
         """Submit a Gremlin script to the given URL and return all results."""
-        from gremlin_python.driver import client as gremlin_client
+        from dse_jg_migrator.gremlin_io import open_gremlin_client
 
         kwargs: dict[str, Any] = {}
         if username:
@@ -195,7 +195,7 @@ class Validator:
 
         # DSE requires the "<graph>.g" traversal source; JanusGraph (target) uses plain "g".
         source = f"{self.analysis.graph_name}.g" if url == self.source_gremlin_url else "g"
-        c = gremlin_client.Client(url, source, **kwargs)
+        c = open_gremlin_client(url, source, **kwargs)
         try:
             return c.submit(script, bindings).all().result()
         finally:

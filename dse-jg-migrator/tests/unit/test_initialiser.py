@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from dse_jg_migrator.initialiser import Initialiser
 
@@ -153,7 +153,7 @@ def test_submit_passes_credentials_and_closes_client(tmp_path) -> None:  # type:
         },
     ):
         assert init._submit("x", {"a": 1}) == ["ok"]
-    fake.Client.assert_called_once_with(init.target_gremlin_url, "g", username="u", password="p")  # noqa: S106
+    fake.Client.assert_called_once_with(init.target_gremlin_url, "g", transport_factory=ANY, username="u", password="p")  # noqa: S106
     fake.Client.return_value.close.assert_called_once()
 
 

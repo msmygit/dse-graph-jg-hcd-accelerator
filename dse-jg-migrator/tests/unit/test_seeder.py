@@ -254,7 +254,7 @@ def _fake_gremlin_modules(client_cls: MagicMock) -> dict:  # type: ignore[type-a
 def _two_clients() -> tuple[MagicMock, MagicMock, MagicMock]:
     """Return (client_cls, system_client, graph_client) keyed on the traversal-source argument."""
     system_client, graph_client = MagicMock(), MagicMock()
-    client_cls = MagicMock(side_effect=lambda _url, source: system_client if source == "g" else graph_client)
+    client_cls = MagicMock(side_effect=lambda _url, source, **_kw: system_client if source == "g" else graph_client)
     return client_cls, system_client, graph_client
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from dse_jg_migrator.models import AnalysisResult, EdgeLabelDefinition, VertexLabelDefinition
 from dse_jg_migrator.validator import Validator
@@ -191,7 +191,7 @@ def test_submit_passes_credentials_and_closes_client(tmp_path) -> None:  # type:
         },
     ):
         assert v._submit("ws://x", "g.V().count()", {}, "u", "p") == [7]
-    fake.Client.assert_called_once_with("ws://x", "g", username="u", password="p")  # noqa: S106
+    fake.Client.assert_called_once_with("ws://x", "g", transport_factory=ANY, username="u", password="p")  # noqa: S106
     fake.Client.return_value.close.assert_called_once()
 
 
