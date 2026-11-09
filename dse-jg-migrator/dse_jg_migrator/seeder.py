@@ -10,6 +10,7 @@ import logging
 import re
 from importlib import resources
 from typing import Any
+from urllib.parse import urlsplit
 
 from dse_jg_migrator.models import SeederResult, UserFacingError
 
@@ -24,6 +25,11 @@ _RANGE_TOKENS = {"{{V_RANGE}}": "vertex_count", "{{E_RANGE}}": "edge_count"}
 class SeedError(UserFacingError):
     """A seed statement was rejected by DSE; the message names the template, server and statement."""
 
+
+# DSE Gremlin port -> CQL port on the same host, for the copy-paste ``assess`` hint. The local Docker stack maps DSE to
+# 8183/9043 (so it does not clash with JanusGraph/HCD on 8182/9042); every other cluster uses the standard 9042.
+_LOCAL_STACK_CQL_PORTS = {8183: 9043}
+_DEFAULT_CQL_PORT = 9042
 
 TEMPLATES: frozenset[str] = frozenset({"food", "social", "iot", "enterprise"})
 
@@ -191,4 +197,10 @@ class Seeder:
         return statements
 
     def _build_assess_hint(self) -> str:
-        return f"dse-jg-migrator assess --source-gremlin-url {self.gremlin_url} --graph-name {self.graph_name}"
+        """Return a complete ``assess`` command; the source CQL host is the Gremlin URL's host."""
+        url = urlsplit(self.gremlin_url)
+        cql_port = _LOCAL_STACK_CQL_PORTS.get(url.port or 0, _DEFAULT_CQL_PORT)
+        return (
+            f"dse-jg-migrator assess --source-gremlin-url {self.gremlin_url} "
+            f"--source-cql-host {url.hostname} --source-cql-port {cql_port} --graph-name {self.graph_name}"
+        )
