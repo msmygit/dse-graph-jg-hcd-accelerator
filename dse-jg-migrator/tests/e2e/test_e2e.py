@@ -1,6 +1,7 @@
 """End-to-end tests — require a live container stack (Docker or Podman).
 
-Run with: E2E_ENABLED=1 pytest tests/e2e/test_e2e.py -v
+Run with: HCD_CQL_PASSWORD=cassandra E2E_ENABLED=1 pytest tests/e2e/test_e2e.py -v
+(HCD enforces password authentication; the commands under test and the target reset read HCD_CQL_PASSWORD.)
 
 Prerequisites:
   docker compose -f docker/docker-compose-e2e.yml up -d
@@ -101,6 +102,7 @@ def _reset_target() -> None:
 def stack_health() -> object:
     if not E2E_ENABLED:
         pytest.skip("E2E_ENABLED not set — skipping E2E tests")
+    assert os.environ.get("HCD_CQL_PASSWORD"), "Set HCD_CQL_PASSWORD (fresh local stack: cassandra) — HCD needs it"
     assert _wait_for_stack(), "Container stack (docker/podman) did not become healthy in time"
     _reset_target()  # start from an empty target even if a previous run died before teardown
     assert _wait_for_stack(), "JanusGraph did not become healthy again after the target reset"

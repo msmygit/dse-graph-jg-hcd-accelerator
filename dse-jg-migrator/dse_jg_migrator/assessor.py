@@ -29,7 +29,7 @@ class Assessor:
         OL-001 through OL-003 (OLAP)
         SE-001 through SE-002 (security)
         TP-001 through TP-005 (TinkerPop delta)
-        HC-001 through HC-008 (HCD target — only when target_cql_host is provided)
+        HC-001 through HC-009 (HCD target — only when target_cql_host is provided)
     """
 
     def __init__(
@@ -41,7 +41,7 @@ class Assessor:
         target_cql_host: str | None = None,
         target_cql_port: int = 9042,
         target_cql_username: str = "cassandra",
-        target_cql_password: str = "cassandra",  # noqa: S107
+        target_cql_password: str = "",
         username: str | None = None,
         password: str | None = None,
     ) -> None:
@@ -423,11 +423,12 @@ class Assessor:
         """Pre-flight checks against the HCD 2.x target cluster.
 
         Attempts a CQL connection to the HCD target. If the connection fails,
-        emits HC-008 (ICR auth required). If successful, checks HC-001 through HC-007.
+        emits HC-008 (ICR auth required). If successful, probes whether an anonymous
+        connection is rejected (HC-001) or accepted (HC-009), then checks HC-002 through HC-007.
 
         Reads from: target HCD CQL endpoint (read-only system table queries).
         Writes: nothing.
-        Rules: HC-001 through HC-008.
+        Rules: HC-001 through HC-009.
         """
         findings: list[AssessmentFinding] = []
         try:
@@ -446,14 +447,8 @@ class Assessor:
             )
             session = cluster.connect()
 
-            # HC-001: AdvancedAuthenticator — successful connection with credentials confirms it
-            findings.append(
-                self._make_finding(
-                    "HC-001",
-                    "HCD AdvancedAuthenticator confirmed active — credentials accepted. "
-                    "Ensure JanusGraph config sets storage.cql.username and storage.cql.password.",
-                )
-            )
+            # HC-001 / HC-009: credentials were accepted; authentication is enforced only if anonymous is rejected
+            findings.append(self._auth_enforcement_finding())
 
             # HC-002: materialized_views_enabled
             try:
@@ -497,11 +492,51 @@ class Assessor:
                     f"{self.target_cql_host}:{self.target_cql_port}. "
                     f"Error: {exc}. "
                     "If running locally, ensure 'docker login cp.icr.io --username cp' "
-                    "succeeded and the HCD container is healthy (docker compose ps).",
+                    "succeeded and the HCD container is healthy (docker compose ps). "
+                    "If the error is an authentication failure, check --target-cql-username and "
+                    "--target-cql-password (or HCD_CQL_PASSWORD).",
                 )
             )
 
         return findings
+
+    def _auth_enforcement_finding(self) -> AssessmentFinding:
+        """Probe whether the HCD target rejects a CQL connection without credentials.
+
+        Reads from: target HCD CQL endpoint — connects only, issues no query.
+        Writes: nothing.
+        Rules: HC-001 (anonymous rejected, or the probe was inconclusive) or HC-009 (anonymous accepted).
+        """
+        from cassandra import AuthenticationFailed
+        from cassandra.cluster import Cluster, NoHostAvailable
+
+        target = f"{self.target_cql_host}:{self.target_cql_port}"
+        cluster = Cluster([self.target_cql_host], port=self.target_cql_port, connect_timeout=10)
+        try:
+            cluster.connect()
+        except NoHostAvailable as exc:
+            if exc.errors and all(isinstance(e, AuthenticationFailed) for e in exc.errors.values()):
+                return self._make_finding(
+                    "HC-001",
+                    f"HCD at {target} accepted the credentials and rejected an anonymous connection — "
+                    "password authentication is enforced. Ensure JanusGraph sets storage.username and "
+                    "storage.password.",
+                )
+            reason: Exception = exc
+        except Exception as exc:  # noqa: BLE001 — any other failure only makes the probe inconclusive
+            reason = exc
+        else:
+            return self._make_finding(
+                "HC-009",
+                f"HCD at {target} accepted an anonymous CQL connection — authentication is not enforced.",
+            )
+        finally:
+            cluster.shutdown()
+        return self._make_finding(
+            "HC-001",
+            f"HCD at {target} accepted the credentials, but whether it rejects anonymous connections could not be "
+            f"verified (anonymous probe failed with: {reason}).",
+        )
 
     # ──────────────────────────────────────────────────────────────────────────
     # Risk computation and summary

@@ -24,6 +24,10 @@ For the full implementation plan see
 ### Three steps (from `dse-jg-migrator/`)
 
 ```bash
+# HCD runs with password authentication. Its superuser password on a fresh local stack is `cassandra`; every
+# command below (and every compose command) reads it from this variable. Set it in each new terminal.
+export HCD_CQL_PASSWORD=cassandra
+
 # 1. Start the stack: checks prerequisites, then starts every service and waits until all are healthy.
 #    First run: 5–15 min (image pulls; DSE boots in ~4 min under emulation on Apple Silicon). Later: a few min.
 #    Another HCD version? HCD_IMAGE_TAG=<tag> ./docker/up.sh   (default 2.0.8-ubi)
@@ -65,8 +69,18 @@ Your seeded source graphs are kept, so you can migrate them again at any time.
 podman-compose -f docker/docker-compose-e2e.yml stop     # keep data (Docker: docker compose … stop)
 ./docker/up.sh                                           # resume
 ./docker/up.sh --reset-target                            # empty only the migration target (keeps source data)
-podman-compose -f docker/docker-compose-e2e.yml down -v  # delete everything, including seeded data
+./docker/up.sh --clean                                   # clean slate: delete everything, including seeded data
 ```
+
+**Starting from a clean slate** (e.g. a container that cannot start after a crash or power loss):
+
+```bash
+./docker/up.sh --clean   # lists, asks, then removes this stack's containers, volumes, network and ./out
+./docker/up.sh           # images are kept, so this starts without downloading
+```
+
+`--clean` covers what `podman rm --force --all` leaves behind (the data volumes, the network, `./out`) and touches
+nothing outside this stack. Details: [`docker/README.md` → Clean slate](docker/README.md#clean-slate).
 
 **Fallback without `up.sh`** (Docker Compose v2 only — podman-compose has no `--wait`):
 
@@ -107,6 +121,10 @@ dse-jg-migrator assess \
 ```
 
 Produces: `food-assessment-report.md`, `food-assessment-report.json`, `food-assessment-report.html`
+
+With `--target-cql-host`, the HCD password comes from `HCD_CQL_PASSWORD` (or `--target-cql-password`; user
+`--target-cql-username`, default `cassandra`). There is no built-in default. The HCD pre-flight reports **HC-001**
+when HCD rejects an anonymous connection and **HC-009** (RED) when it accepts one.
 
 ### `analyse` — Extract DSE Graph schema to JSON
 
@@ -202,7 +220,7 @@ pytest tests/unit/ -v
 pytest tests/unit/ --cov=dse_jg_migrator --cov-report=term-missing --cov-fail-under=80
 
 # E2E tests (requires live Docker Compose stack)
-E2E_ENABLED=1 pytest tests/e2e/test_e2e.py -v
+HCD_CQL_PASSWORD=cassandra E2E_ENABLED=1 pytest tests/e2e/test_e2e.py -v
 ```
 
 ---

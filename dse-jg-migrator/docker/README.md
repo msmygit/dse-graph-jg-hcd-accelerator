@@ -99,9 +99,10 @@ HCD 2.x and DSE 6.8/6.9 are `linux/amd64` images. Findings from running them on 
 
 2. **Disable jemalloc.** HCD's `cassandra` launcher sets `LD_PRELOAD=libjemalloc.so`, which segfaults the
    JVM under QEMU. The compose file sets `CASSANDRA_LIBJEMALLOC=-` (and `QEMU_CPU=max`) on the HCD service.
-3. **HCD's `cassandra.yaml` is not mounted.** `hcd-dev/cassandra.yaml` binds `rpc_address: localhost`,
-   which makes CQL unreachable from other containers. Without the mount, the image's auto-configuration
-   sets `rpc_address: 0.0.0.0`. Default credentials are `cassandra` / `cassandra`.
+3. **HCD's `cassandra.yaml` is not replaced, only patched.** Mounting a whole `cassandra.yaml` turns off the
+   image's network auto-configuration (a copy that binds `rpc_address: localhost` made CQL unreachable from other
+   containers). Instead `hcd-entrypoint.sh` enables authentication in the image's own file — see
+   [HCD authentication](#hcd-authentication).
 4. **DSE starts with `-g -s`** (Graph and Search on top of core Cassandra) and `cpus: 8`. Search is needed by
    `searchIndex()` (the `food` and `enterprise` templates and the E2E test); `social` and `iot` need Graph only.
 5. **DSE is slow to boot** under emulation (several minutes). A published host port is always open under
@@ -126,23 +127,65 @@ Expect roughly 2× (HCD) to much longer (DSE) startup versus native `amd64`.
 ./docker/up.sh            # preflight checks, then start in order and wait until healthy
 ./docker/up.sh --check    # preflight only
 ./docker/up.sh --reset-target [--yes]   # empty the local JanusGraph target (asks first unless --yes)
+./docker/up.sh --clean [--yes]          # clean slate: remove this stack's containers, volumes, network and ./out
 
 # Fallback, Docker Compose v2 only (it honours the healthcheck chain; podman-compose has no --wait):
 docker compose -f docker/docker-compose-e2e.yml up -d --wait --wait-timeout 1800
 ```
 
-The preflight checks the compose tool, that the runtime is running, registry access for the HCD image, and
+Every command needs `HCD_CQL_PASSWORD` (see [HCD authentication](#hcd-authentication)); on a fresh stack:
+`export HCD_CQL_PASSWORD=cassandra`.
+
+The preflight checks `HCD_CQL_PASSWORD`, the compose tool, that the runtime is running, registry access for the HCD image, and
 ≥ 10 CPUs / 20 GiB for containers (printing the exact fix if not). On Apple Silicon with Podman it re-enables the
 QEMU emulation that every VM restart drops (caveat 1 below), so you do not have to.
 
 `--reset-target` stops JanusGraph, drops **only** the `jg_migration_test` keyspace and its OpenSearch index, removes
 the migration checkpoints in `./out` (otherwise re-running `migrate` would skip everything as already migrated), and
-starts JanusGraph again, which recreates an empty keyspace. The DSE source graphs are not touched. If HCD enforces
-authentication, set `HCD_CQL_USERNAME` / `HCD_CQL_PASSWORD`. `tests/e2e` uses the same command for its reset.
+starts JanusGraph again, which recreates an empty keyspace. The DSE source graphs are not touched. It connects as
+`HCD_CQL_USERNAME` (default `cassandra`) with `HCD_CQL_PASSWORD`. `tests/e2e` uses the same command for its reset.
 
 If a service stops, `up.sh` prints its last log lines — for HCD and DSE also the errors from `system.log`. A DSE
-that exits with code 100 while replaying its commit log was stopped uncleanly with an older compose file (no
-`stop_grace_period`); reset the stack with `down -v` (deletes its data) and start again.
+that exits with code 100 while replaying its commit log was stopped uncleanly (e.g. killed after the default 10 s
+stop timeout, or a host power loss); `up.sh` names the broken volume. Start from a clean slate (below).
+
+### Clean slate
+
+`./docker/up.sh --clean` lists, then (after you confirm, or with `--yes`) removes everything this stack created —
+whichever compose project created it:
+
+| Removed | Why |
+|---|---|
+| containers `migrator-*`, with their anonymous volumes | in reverse dependency order (Podman refuses otherwise) |
+| named volumes `*_hcd-data`, `*_opensearch-data`, `*_dse-data` | all graph data, source and target |
+| network `*_migrator-net` | recreated on the next start |
+| `./out` | reports, checkpoints and id maps of earlier migrations |
+
+Images are kept, so the next `./docker/up.sh` needs no download. Prefer it to `podman rm --force --all`, which
+removes every container on the machine but leaves this stack's volumes — and with them any broken commit log.
+Volumes orphaned by such an earlier removal (anonymous volumes have no name to match) can be listed with
+`podman volume ls --filter dangling=true`; `podman volume prune` removes **every** unused volume on the machine.
+
+### HCD authentication
+
+The HCD image ships with authentication **off**: `cassandra.yaml` has the `AdvancedAuthenticator` and
+`AdvancedAuthorizer` configured but their `enabled: true` lines commented out, so any client connects without a
+password. The compose file runs `hcd-entrypoint.sh` instead of the image entrypoint. It uncomments
+`authenticator.parameters.enabled: true`, `authenticator.parameters.default_scheme: internal` and
+`authorizer.parameters.enabled: true`, refuses to start HCD if those lines are not found (a changed image layout),
+then hands over to the image's own entrypoint, which still configures the network.
+
+```mermaid
+flowchart LR
+    T[tini] --> W[hcd-entrypoint.sh<br/>enable authn + authz] --> E["/entrypoint.sh<br/>network auto-config"] --> H[HCD]
+    W -- lines not found --> X[exit 1:<br/>never start open]
+```
+
+`HCD_CQL_PASSWORD` is required (the compose file fails without it): it is the password of HCD's built-in
+`cassandra` superuser, which is `cassandra` on a fresh node. The healthcheck, JanusGraph
+(`storage.password`), `up.sh --reset-target` and the CLI's `--target-cql-password` all read it. If you change
+the superuser's password in HCD, export the new one. `dse-jg-migrator assess --target-cql-host …` verifies the result:
+**HC-001** when an anonymous connection is rejected, **HC-009** (RED) when it is accepted.
 
 `hcd`, `opensearch`, `janusgraph` and `dse-graph-source` must show `(healthy)` before running migrations.
 The optional `janusgraph-visualizer` has no healthcheck.
@@ -184,6 +227,8 @@ dse-jg-migrator run-all \
 ## Teardown
 
 ```bash
+./docker/up.sh --clean   # everything this stack created, in any compose project; keeps images
+# or, for the current compose project only:
 docker compose -f docker/docker-compose-e2e.yml down -v
 # -v removes all named volumes (hcd-data, opensearch-data, dse-data)
 ```

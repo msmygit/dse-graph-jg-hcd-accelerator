@@ -139,3 +139,40 @@ the developer workflow had hit:
 - Resetting the target must also clear the client-side checkpoints, or the next `migrate` of the same graph finds every
   label "already complete" and writes nothing. Stop JanusGraph *before* dropping its keyspace: no writes race the
   drop, the instance deregisters cleanly, and no stale instance or leaked transaction blocks later index registration.
+
+## 10. HCD authentication is off in the image — verify it, don't assume it
+
+- The HCD 2.x image's `cassandra.yaml` configures `AdvancedAuthenticator` / `AdvancedAuthorizer` but ships their
+  `enabled: true` lines **commented out**, so HCD accepted any client with any (or no) password. A successful
+  credentialed connection therefore proves nothing; HC-001 used to claim "authenticator confirmed active" from it.
+- The assessor now also tries an **anonymous** connection (connect only). The driver signals "credentials required"
+  as `NoHostAvailable` whose `errors` are all `AuthenticationFailed('Remote end requires authentication')` → HC-001.
+  A successful anonymous connect → HC-009 (RED). Anything else is reported as unverified, never as enforced.
+- Don't mount a whole `cassandra.yaml` to change one setting: the image's entrypoint then skips its network
+  auto-configuration (`HCD_AUTO_CONF_OFF`), and a copy binding `rpc_address: localhost` made CQL unreachable from
+  other containers. Patch the image's own file in a wrapper entrypoint (`docker/hcd-entrypoint.sh`) and fail the
+  start if the expected lines are missing, so an image change can never silently start an open database.
+- JanusGraph's backend credentials are `storage.username` / `storage.password` — **not** `storage.cql.*`. JanusGraph
+  silently ignores unknown keys, so the wrong ones "worked" for as long as HCD let everyone in. Turning a security
+  control on is also a test of every client's configuration; check keys against `janusgraph/docs/configs/janusgraph-cfg.md`.
+- A required password (`${VAR:?msg}`) is interpolated by **every** compose command, including `stop` and `down`;
+  the README therefore sets `HCD_CQL_PASSWORD` once per terminal before any command.
+- Keep `: ` (colon-space) out of the `:?` message in a list-style `environment:` entry: YAML then parses the item as a
+  mapping and podman-compose crashes (`'dict' object has no attribute 'split'`). Check with `podman-compose … config`.
+
+```mermaid
+flowchart TD
+    C[credentialed connect] -- fails --> H8[HC-008]
+    C -- ok --> A[anonymous connect]
+    A -- AuthenticationFailed only --> H1[HC-001 enforced]
+    A -- connected --> H9[HC-009 RED: open]
+    A -- other error --> H1u[HC-001 unverified]
+```
+
+## 11. A clean slate is more than `rm --all`
+
+`podman rm --force --all` removes every container on the machine, yet leaves this stack's named volumes — and with
+them a DSE commit log it cannot replay (exit 100) — plus the network and `./out`. `down -v` only covers the current
+compose project (the directory name), so volumes created from another checkout survive. `./docker/up.sh --clean`
+removes the stack's containers in reverse dependency order (with their anonymous volumes), every `*_hcd-data` /
+`*_opensearch-data` / `*_dse-data` volume, `*_migrator-net` and `./out`, after listing them — and keeps the images.

@@ -14,6 +14,7 @@
 #   ./docker/up.sh janusgraph-visualizer    # optional UI (start after janusgraph)
 #   ./docker/up.sh --check                  # preflight only
 #   ./docker/up.sh --reset-target [--yes]   # empty the local JanusGraph target (asks first unless --yes)
+#   ./docker/up.sh --clean [--yes]          # remove this stack's containers, volumes, network and ./out (keeps images)
 #
 # Environment:
 #   COMPOSE         compose command (default: podman-compose if installed, else "docker compose")
@@ -21,7 +22,9 @@
 #   HEALTH_TIMEOUT  seconds to wait per service (default: 1800 — first boots under emulation are slow)
 #   SKIP_PREFLIGHT  set to 1 to skip the prerequisite checks
 #   HCD_IMAGE_TAG   HCD image tag (default 2.0.8-ubi); also read by docker-compose-e2e.yml
-#   HCD_CQL_USERNAME / HCD_CQL_PASSWORD  credentials for --reset-target, if HCD enforces authentication
+#   HCD_CQL_PASSWORD  required: password of HCD's `cassandra` superuser (fresh local stack: cassandra). HCD runs with
+#                     authentication enabled (docker/hcd-entrypoint.sh); the healthcheck, JanusGraph and
+#                     --reset-target use it. HCD_CQL_USERNAME overrides the user for --reset-target.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -47,9 +50,16 @@ STOP_ARGS=""
 
 fail() { echo "✘ $*" >&2; exit 1; }
 
+require_hcd_password() {
+  [[ -n "${HCD_CQL_PASSWORD:-}" ]] || fail "HCD_CQL_PASSWORD is not set. HCD runs with password authentication; export the
+  password of its 'cassandra' superuser first — on a fresh local stack that is:
+    export HCD_CQL_PASSWORD=cassandra"
+}
+
 # ── Preflight ────────────────────────────────────────────────────────────────────────────────────────────────
 preflight() {
   echo "Checking prerequisites ($RUNTIME, $COMPOSE)…"
+  require_hcd_password
   $COMPOSE version >/dev/null 2>&1 \
     || fail "'$COMPOSE' is not available. Install podman-compose (brew install podman-compose) or Docker Compose v2."
 
@@ -160,8 +170,11 @@ explain_exit() {
         echo "  Errors from $svc's system.log:" >&2
         grep -E "ERROR|Exception" "$tmp" | tail -5 | cut -c1-240 >&2 || true
         if grep -q "CommitLogReplay" "$tmp"; then
-          echo "  → Its data volume holds a commit log it cannot replay (left by an unclean stop). Reset it with:" >&2
-          echo "      $COMPOSE -f $COMPOSE_FILE down -v   # deletes ALL stack data; re-seed afterwards" >&2
+          local volume
+          volume="$($RUNTIME inspect --format \
+            '{{range .Mounts}}{{if eq .Destination "/var/lib/cassandra"}}{{.Name}}{{end}}{{end}}' "$ctr" 2>/dev/null || true)"
+          echo "  → Its data volume ${volume:+($volume) }holds a commit log it cannot replay (left by an unclean stop)." >&2
+          echo "    Start from a clean slate (deletes all stack data; re-seed afterwards):  ./docker/up.sh --clean" >&2
         fi
       fi
       rm -f "$tmp" ;;
@@ -197,15 +210,12 @@ wait_ready() {
 TARGET_KEYSPACE="jg_migration_test"
 
 hcd_cql() {
-  if [[ -n "${HCD_CQL_PASSWORD:-}" ]]; then
-    $RUNTIME exec migrator-hcd cqlsh -u "${HCD_CQL_USERNAME:-cassandra}" -p "$HCD_CQL_PASSWORD" -e "$1"
-  else
-    $RUNTIME exec migrator-hcd cqlsh -e "$1"
-  fi
+  $RUNTIME exec migrator-hcd cqlsh -u "${HCD_CQL_USERNAME:-cassandra}" -p "$HCD_CQL_PASSWORD" -e "$1"
 }
 
 reset_target() {
   local assume_yes="$1" answer out code removed
+  require_hcd_password
   for svc in hcd opensearch; do
     is_ready "$(container_for "$svc")" || fail "$svc is not running — start the stack first: ./docker/up.sh"
   done
@@ -215,6 +225,12 @@ reset_target() {
     [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted — nothing changed."; exit 1; }
   fi
 
+  # Check the credentials before changing anything, so a wrong password does not leave JanusGraph stopped.
+  if ! out="$(hcd_cql "SELECT release_version FROM system.local" 2>&1)"; then
+    echo "$out" | grep -v -i "warning\|recommendation" | tail -3 >&2
+    fail "HCD rejected the credentials. Check HCD_CQL_PASSWORD (and HCD_CQL_USERNAME, default cassandra). Nothing changed."
+  fi
+
   # Stop JanusGraph first: it cannot write into the keyspace mid-drop, and it deregisters itself cleanly.
   echo "▶ stopping janusgraph"
   $RUNTIME stop -t 120 migrator-janusgraph >/dev/null 2>&1 || true
@@ -222,7 +238,7 @@ reset_target() {
   echo "▶ dropping keyspace $TARGET_KEYSPACE in HCD"
   if ! out="$(hcd_cql "DROP KEYSPACE IF EXISTS $TARGET_KEYSPACE" 2>&1)"; then
     echo "$out" | grep -v -i "warning\|recommendation" | tail -3 >&2
-    fail "Could not drop $TARGET_KEYSPACE. If HCD enforces authentication, set HCD_CQL_USERNAME and HCD_CQL_PASSWORD."
+    fail "Could not drop $TARGET_KEYSPACE. Check HCD_CQL_PASSWORD (and HCD_CQL_USERNAME, default cassandra)."
   fi
 
   echo "▶ deleting OpenSearch index $TARGET_KEYSPACE*"
@@ -243,7 +259,47 @@ reset_target() {
   echo "Target reset. Migrate again with: dse-jg-migrator run-all … --output-dir ./out"
 }
 
+# ── Clean slate ──────────────────────────────────────────────────────────────────────────────────────────────
+# Removes everything this stack created, whichever compose project created it: its containers (with their anonymous
+# volumes), its named volumes, its network and ./out. Images are kept, so the next start needs no download.
+# Lists what it found and asks first — the volume and network names are matched by suffix.
+clean() {
+  local assume_yes="$1" answer containers="" volumes networks ctr
+  # Reverse dependency order: Podman refuses to remove a container another one depends on.
+  for ctr in migrator-visualizer migrator-janusgraph migrator-hcd migrator-opensearch migrator-dse-source; do
+    $RUNTIME container inspect "$ctr" >/dev/null 2>&1 && containers="$containers $ctr"
+  done
+  volumes="$($RUNTIME volume ls --format '{{.Name}}' | grep -E '_(hcd-data|opensearch-data|dse-data)$' || true)"
+  networks="$($RUNTIME network ls --format '{{.Name}}' | grep -E '_migrator-net$' || true)"
+  if [[ -z "$containers$volumes$networks" && ! -d out ]]; then
+    echo "Nothing to clean — no containers, volumes, network or ./out from this stack."
+    return
+  fi
+  echo "This permanently deletes ALL data of the local stack (source DSE graphs and the migrated target):"
+  [[ -n "$containers" ]] && echo "  containers:${containers}"
+  [[ -n "$volumes" ]] && echo "  volumes:    $(echo "$volumes" | tr '\n' ' ')"
+  [[ -n "$networks" ]] && echo "  network:    $(echo "$networks" | tr '\n' ' ')"
+  [[ -d out ]] && echo "  directory:  $PWD/out"
+  echo "  Images are kept."
+  if [[ "$assume_yes" != "1" ]]; then
+    [[ -t 0 ]] || fail "--clean deletes data; run it in a terminal, or pass --yes to confirm."
+    read -r -p "Delete all of the above? [y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted — nothing changed."; exit 1; }
+  fi
+  for ctr in $containers; do
+    echo "▶ removing container $ctr"
+    $RUNTIME rm -f -v "$ctr" >/dev/null
+  done
+  for v in $volumes; do echo "▶ removing volume $v"; $RUNTIME volume rm "$v" >/dev/null; done
+  for n in $networks; do echo "▶ removing network $n"; $RUNTIME network rm "$n" >/dev/null; done
+  if [[ -d out ]]; then echo "▶ removing ./out"; rm -rf out; fi
+  echo "Clean. Start again with: ./docker/up.sh"
+}
+
 case "${1:-}" in
+  --clean)
+    clean "$([[ "${2:-}" == "--yes" ]] && echo 1 || echo 0)"
+    exit 0 ;;
   --check)
     preflight
     exit 0 ;;

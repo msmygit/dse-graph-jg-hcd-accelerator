@@ -9,6 +9,12 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) forma
 
 ### Added
 
+- HCD authentication and a clean slate (branch `fix/hcd-auth-clean-slate`, #4):
+  - `docker/hcd-entrypoint.sh`: the HCD image ships with authentication off (any client connected without a password). The wrapper enables `authenticator` (`enabled: true`, `default_scheme: internal`) and `authorizer` (`enabled: true`) in the image's own `cassandra.yaml`, refuses to start if those lines are missing, then runs the image entrypoint, which still configures the network. (#4)
+  - `HCD_CQL_PASSWORD` is required (`${HCD_CQL_PASSWORD:?…}` in the compose file, an `up.sh` preflight check with the fix, and the `env var` of `assess`/`run-all` `--target-cql-password`) — no password default anywhere (AGENTS.md §6.2). (#4)
+  - Rule **HC-009** (RED): HCD accepts an anonymous connection — 58 rules. (#4)
+  - `./docker/up.sh --clean [--yes]`: lists, then removes this stack's containers (with anonymous volumes), named volumes, network and `./out` in any compose project; keeps images. README and `docker/README.md` document a clean slate. (#4)
+
 - Frictionless onboarding (branch `fix/frictionless-onboarding`, PR #3), after a fresh-user test of the README failed at its first step:
   - README quick start: prerequisites table, then three commands (`./docker/up.sh`, `seed`, `run-all`) with expected times, where results land, stop/resume/reset, and `docker compose … up -d --wait` as the Docker Compose v2 fallback.
   - `./docker/up.sh` preflight (`--check` runs it alone): compose tool present, runtime running, registry login for the HCD image, ≥ 10 CPUs / 20 GiB for containers (prints the exact fix), and on Apple Silicon + Podman re-enables the QEMU emulation that every VM restart drops. Progress lines while a service boots; a stopped HCD/DSE container is explained from its `system.log`.
@@ -54,6 +60,14 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) forma
 
 ### Changed
 
+- `assess`/`run-all`: `--target-cql-password` reads `HCD_CQL_PASSWORD` (was a `cassandra` default) and `--target-cql-username` reads `HCD_CQL_USERNAME`; a `--target-cql-host` without a password stops with a hint. `config.py` and `Assessor` no longer default the password to `cassandra`. (#4)
+- `up.sh`: `--reset-target` always authenticates; a container that cannot replay its commit log is reported with the exact volume and `./docker/up.sh --clean` (was `down -v`, which misses volumes of other compose projects). (#4)
+- `tests/e2e` requires `HCD_CQL_PASSWORD`. (#4)
+
+### Removed
+
+- `hcd-dev/` (a reference HCD compose setup). Its `cassandra.yaml` was no longer mounted (it bound `rpc_address: localhost`); authentication is now enabled by `docker/hcd-entrypoint.sh` instead. `.secrets.baseline` no longer lists its `keystore_password` false positive. (#4)
+
 - Appendix E.8: `init-target` index-enablement wait now defaults to 30 minutes (was 120 s); new `--index-timeout <minutes>` option.
 - Coverage gate restored to 80% (was lowered to 60%) and the `omit` list for `cli.py`, `config.py`, `reporter.py` removed. Per-module coverage is now ≥ 80% for every module (overall 95%).
 - Plan statuses: every sub-task `[x] done`, each verified live on 2026-11-09 (evidence in each status line and Appendix E.10).
@@ -66,6 +80,9 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) forma
 
 ### Fixed
 
+- (#4) JanusGraph's HCD credentials were set with keys JanusGraph does not have (`storage.cql.username` / `storage.cql.password`, silently ignored) in the compose file, `janusgraph-hcd.properties`, the plan and HC-001's text; the real keys are `storage.username` / `storage.password` (`janusgraph-cfg.md`). Unnoticed because HCD never enforced authentication; with it enforced, JanusGraph failed to start ("requires authentication … but no authenticator configured").
+- (#4) `up.sh --reset-target` checks the HCD credentials before stopping JanusGraph, so a wrong password changes nothing.
+- (#4) HC-001 claimed "AdvancedAuthenticator confirmed active — credentials accepted" for any successful credentialed connection, but the HCD image accepts every password while authentication is off. The assessor now also tries an anonymous connection (connect only, no query): rejected → HC-001, accepted → HC-009, inconclusive → HC-001 worded as unverified.
 - (#3) Quick start step 1 (`docker compose up -d`) returned before the stack was healthy under Podman, so step 2 failed; DSE could also crash on start (exit 100, commit-log replay "incompatible schema") after an unclean stop. `stop_grace_period: 2m` for HCD/DSE (podman-compose applies it only in its own `stop`/`down`, so `up.sh` also sets `--stop-timeout=120` on the containers); a stop now logs "DSE shutdown complete" and the next start replays nothing.
 - (#3) `seed` and other commands printed a 60-line aiohttp traceback when a cluster was unreachable; the CLI now prints one line (operation, host, port, hint) and exits 1. Unexpected errors still raise.
 - (#3) With the source unreachable, `assess` reported MEDIUM risk from static advisories (passing the gate) and `analyse` wrote an empty analysis with exit 0. Now CF-006 (HIGH risk) and a clear `analyse` failure.

@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "graph_name": "food",
   "engine": "dsg",
-  "assessed_at": "2026-11-09T12:26:29.335540Z",
+  "assessed_at": "2026-11-09T19:40:58.899605Z",
   "overall_risk": "HIGH",
   "summary": {
     "total_findings": 23,
@@ -176,8 +176,8 @@
       "category": "hcd_target",
       "severity": "YELLOW",
       "title": "HCD AdvancedAuthenticator is enabled",
-      "detail": "HCD AdvancedAuthenticator confirmed active \u2014 credentials accepted. Ensure JanusGraph config sets storage.cql.username and storage.cql.password.",
-      "remediation": "Set storage.cql.username and storage.cql.password in janusgraph.properties. Anonymous connections to HCD will be rejected.",
+      "detail": "HCD at localhost:9042 accepted the credentials and rejected an anonymous connection \u2014 password authentication is enforced. Ensure JanusGraph sets storage.username and storage.password.",
+      "remediation": "Set storage.username and storage.password in janusgraph.properties, supplied at deploy time (e.g. from $HCD_CQL_PASSWORD) \u2014 never committed.",
       "docs_link": "https://docs.janusgraph.org/basics/configuration-reference/#storage-cql"
     },
     {

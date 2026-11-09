@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+from cassandra import AuthenticationFailed
+from cassandra.cluster import NoHostAvailable
 
 from dse_jg_migrator.assessor import Assessor
 from dse_jg_migrator.models import AssessmentFinding, AssessmentResult
@@ -334,25 +337,78 @@ def test_no_write_operations(tmp_path) -> None:  # type: ignore[no-untyped-def]
 # ---------------------------------------------------------------------------
 
 
-def test_assess_hcd_target_emits_hc008_on_connection_failure() -> None:
-    """_assess_hcd_target emits HC-008 when connection to HCD target fails."""
-    assessor = _make_assessor(target_cql_host="127.0.0.1", target_cql_port=9042)
-    with patch("dse_jg_migrator.assessor.Assessor._assess_hcd_target") as mock:
-        from dse_jg_migrator.models import AssessmentFinding
+def _hcd_clusters(anonymous_connect: object) -> tuple[MagicMock, MagicMock, MagicMock]:
+    """Patchable Cluster factory: the credentialed connection succeeds; the anonymous one does ``anonymous_connect``.
 
-        mock.return_value = [
-            AssessmentFinding(
-                rule_id="HC-008",
-                category="hcd_target",
-                severity="RED",
-                title="IBM Container Registry authentication required",
-                detail="Cannot connect to HCD",
-                remediation="Run docker login cp.icr.io",
-                docs_link="https://www.ibm.com/docs/en/hyper-converged-database",
-            )
-        ]
+    Returns (factory, credentialed session, anonymous cluster).
+    """
+    session = MagicMock()
+    session.execute.return_value = [MagicMock(value="false")]
+    credentialed = MagicMock()
+    credentialed.connect.return_value = session
+    anonymous = MagicMock()
+    if isinstance(anonymous_connect, BaseException):
+        anonymous.connect.side_effect = anonymous_connect
+    else:
+        anonymous.connect.return_value = MagicMock()
+    factory = MagicMock(side_effect=lambda *a, **kw: credentialed if "auth_provider" in kw else anonymous)
+    return factory, session, anonymous
+
+
+def _hcd_findings(anonymous_connect: object) -> tuple[list[AssessmentFinding], MagicMock, MagicMock]:
+    factory, session, anonymous = _hcd_clusters(anonymous_connect)
+    assessor = _make_assessor(target_cql_host="hcd", target_cql_port=9042)
+    with patch("cassandra.cluster.Cluster", factory):
         findings = assessor._assess_hcd_target()
-    assert any(f.rule_id == "HC-008" for f in findings)
+    return findings, session, anonymous
+
+
+def test_hcd_target_rejecting_anonymous_emits_hc001_not_hc009() -> None:
+    """Credentials accepted and anonymous rejected → HC-001 (authentication enforced)."""
+    rejected = NoHostAvailable("no host", {"hcd:9042": AuthenticationFailed("Remote end requires authentication")})
+    findings, _, anonymous = _hcd_findings(rejected)
+    ids = [f.rule_id for f in findings]
+    assert "HC-001" in ids and "HC-009" not in ids and "HC-008" not in ids
+    assert "rejected an anonymous connection" in next(f.detail for f in findings if f.rule_id == "HC-001")
+    anonymous.shutdown.assert_called_once()
+
+
+def test_hcd_target_accepting_anonymous_emits_red_hc009() -> None:
+    """An HCD that accepts a connection without credentials → HC-009 (RED), not HC-001."""
+    findings, _, anonymous = _hcd_findings(None)
+    ids = [f.rule_id for f in findings]
+    assert "HC-009" in ids and "HC-001" not in ids
+    assert next(f for f in findings if f.rule_id == "HC-009").severity == "RED"
+    anonymous.shutdown.assert_called_once()
+
+
+def test_hcd_target_inconclusive_anonymous_probe_emits_unverified_hc001() -> None:
+    """An anonymous probe that fails for another reason does not claim enforcement either way."""
+    findings, _, _ = _hcd_findings(NoHostAvailable("no host", {"hcd:9042": OSError("connection reset")}))
+    detail = next(f.detail for f in findings if f.rule_id == "HC-001")
+    assert "could not be verified" in detail
+    assert "HC-009" not in [f.rule_id for f in findings]
+
+
+def test_hcd_target_connection_failure_emits_hc008() -> None:
+    """A failed credentialed connection → HC-008 only; no auth finding is claimed."""
+    factory = MagicMock()
+    factory.return_value.connect.side_effect = NoHostAvailable("no host", {"hcd:9042": OSError("refused")})
+    assessor = _make_assessor(target_cql_host="hcd", target_cql_port=9042)
+    with patch("cassandra.cluster.Cluster", factory):
+        findings = assessor._assess_hcd_target()
+    assert [f.rule_id for f in findings] == ["HC-008"]
+    assert "hcd:9042" in findings[0].detail
+
+
+def test_hcd_target_probe_is_read_only() -> None:
+    """The HCD pre-flight issues reads only, and the anonymous probe issues no query at all (AGENTS.md §5.5)."""
+    findings, session, anonymous = _hcd_findings(None)
+    session.execute.assert_called()
+    for call in session.execute.call_args_list:
+        query = str(call.args[0]).upper()
+        assert not any(kw in query for kw in ("INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE")), call
+    anonymous.connect.return_value.execute.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
