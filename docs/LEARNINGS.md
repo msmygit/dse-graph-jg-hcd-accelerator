@@ -136,3 +136,6 @@ the developer workflow had hit:
 - Silent success is the worst failure: with the source down, `assess` passed its gate and `analyse` wrote an empty
   analysis. Every stage must fail loudly when it inspected nothing.
 - Defaults must be exercised too: the quick start used small sizes and passed, while `seed`'s own defaults failed.
+- Resetting the target must also clear the client-side checkpoints, or the next `migrate` of the same graph finds every
+  label "already complete" and writes nothing. Stop JanusGraph *before* dropping its keyspace: no writes race the
+  drop, the instance deregisters cleanly, and no stale instance or leaked transaction blocks later index registration.

@@ -50,14 +50,21 @@ Results are in `./out/`: start with `food-migration-report.md`, then `food-valid
 counts) and `food-assessment-report.html`.
 
 **Trying another sample?** Seed it under its own name (`--template social --graph-name social`, …); re-seeding the same
-name appends data. The local target is one JanusGraph graph, so samples with the same labels (e.g. `food` twice under
-different names) add up there and `validate` reports a mismatch — reset the stack (`down -v` below) between such runs.
+name appends data. The local target is one JanusGraph graph, so empty it before migrating the next sample —
+otherwise samples with the same labels add up there and `validate` reports a mismatch:
+
+```bash
+./docker/up.sh --reset-target   # asks first; empties ONLY the local target + ./out checkpoints (~45 s)
+```
+
+Your seeded source graphs are kept, so you can migrate them again at any time.
 
 **Stop / resume / reset**
 
 ```bash
 podman-compose -f docker/docker-compose-e2e.yml stop     # keep data (Docker: docker compose … stop)
 ./docker/up.sh                                           # resume
+./docker/up.sh --reset-target                            # empty only the migration target (keeps source data)
 podman-compose -f docker/docker-compose-e2e.yml down -v  # delete everything, including seeded data
 ```
 

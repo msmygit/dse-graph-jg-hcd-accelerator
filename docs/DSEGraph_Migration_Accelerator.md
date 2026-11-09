@@ -2304,6 +2304,13 @@ docker login cp.icr.io --username cp
      **CF-006** (RED → the gate stops `run-all`) and `analyse` fails with the URL and reason.
    - The HCD image tag is configurable: `HCD_IMAGE_TAG` (default `2.0.8-ubi`), read by the compose file and by
      the `up.sh` registry check.
+   - `./docker/up.sh --reset-target [--yes]` empties the local target so another sample can be migrated (samples
+     sharing labels otherwise add up in the one target graph and fail `validate`). After a confirmation prompt it
+     stops JanusGraph, drops **only** the `jg_migration_test` keyspace (AGENTS.md §11) and its OpenSearch index,
+     removes the migration checkpoints in `./out/` (else a re-run would skip everything as already migrated), then
+     starts JanusGraph, which recreates an empty keyspace. Credentials come from `HCD_CQL_USERNAME` /
+     `HCD_CQL_PASSWORD` if set (none are committed). `tests/e2e` uses the same command for its reset (one
+     implementation).
 
 ### Relevant Context
 - HCD image: `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` (from `hcd-dev/compose.yaml:3`) — the default; the E2E stack reads the tag from `HCD_IMAGE_TAG` so users can test another HCD release without editing the compose file

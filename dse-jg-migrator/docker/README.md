@@ -125,6 +125,7 @@ Expect roughly 2× (HCD) to much longer (DSE) startup versus native `amd64`.
 # From the dse-jg-migrator/ directory (Docker or Podman):
 ./docker/up.sh            # preflight checks, then start in order and wait until healthy
 ./docker/up.sh --check    # preflight only
+./docker/up.sh --reset-target [--yes]   # empty the local JanusGraph target (asks first unless --yes)
 
 # Fallback, Docker Compose v2 only (it honours the healthcheck chain; podman-compose has no --wait):
 docker compose -f docker/docker-compose-e2e.yml up -d --wait --wait-timeout 1800
@@ -133,6 +134,11 @@ docker compose -f docker/docker-compose-e2e.yml up -d --wait --wait-timeout 1800
 The preflight checks the compose tool, that the runtime is running, registry access for the HCD image, and
 ≥ 10 CPUs / 20 GiB for containers (printing the exact fix if not). On Apple Silicon with Podman it re-enables the
 QEMU emulation that every VM restart drops (caveat 1 below), so you do not have to.
+
+`--reset-target` stops JanusGraph, drops **only** the `jg_migration_test` keyspace and its OpenSearch index, removes
+the migration checkpoints in `./out` (otherwise re-running `migrate` would skip everything as already migrated), and
+starts JanusGraph again, which recreates an empty keyspace. The DSE source graphs are not touched. If HCD enforces
+authentication, set `HCD_CQL_USERNAME` / `HCD_CQL_PASSWORD`. `tests/e2e` uses the same command for its reset.
 
 If a service stops, `up.sh` prints its last log lines — for HCD and DSE also the errors from `system.log`. A DSE
 that exits with code 100 while replaying its commit log was stopped uncleanly with an older compose file (no

@@ -15,6 +15,7 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) forma
   - `HCD_IMAGE_TAG` selects the HCD image tag (default `2.0.8-ubi`) for the compose file and the preflight.
   - Rule **CF-006** (RED): source graph unreachable or without schema — 57 rules.
   - Seeder: scalable template loops (`{{V_RANGE}}` / `{{E_RANGE}}`) are submitted in chunks of 200, so any `--vertex-count` / `--edge-count` stays under DSE's 30 s request cap; `seed` reports the graph's real totals.
+  - `./docker/up.sh --reset-target [--yes]`: empties only the local target (`jg_migration_test` keyspace, its OpenSearch index, `./out` checkpoints) so another sample can be migrated without `down -v`; asks first unless `--yes`. `tests/e2e` now uses it for its reset (one implementation; the E2E's default-password literal is gone).
 - **ST-1**: Project scaffold — `pyproject.toml`, directory structure, stub modules, `models.py`, `config.py`.
 - **ST-0**: Pre-migration compatibility assessor with 57 rules across 8 categories (CF-006 added in #3) (`compatibility_rules.py`, `assessor.py`, `assessment_reporter.py`). MD/JSON/HTML report output. CLI `assess` command with `--target-cql-host` HCD pre-flight option and `--skip-assessment-gate`.
 - **ST-2**: DSE Graph schema analyser (`analyser.py`) — engine detection, DSL parsing, CQL count enrichment, JSON output.

@@ -13,6 +13,7 @@
 #   ./docker/up.sh hcd opensearch           # only the named services, in the given order
 #   ./docker/up.sh janusgraph-visualizer    # optional UI (start after janusgraph)
 #   ./docker/up.sh --check                  # preflight only
+#   ./docker/up.sh --reset-target [--yes]   # empty the local JanusGraph target (asks first unless --yes)
 #
 # Environment:
 #   COMPOSE         compose command (default: podman-compose if installed, else "docker compose")
@@ -20,6 +21,7 @@
 #   HEALTH_TIMEOUT  seconds to wait per service (default: 1800 — first boots under emulation are slow)
 #   SKIP_PREFLIGHT  set to 1 to skip the prerequisite checks
 #   HCD_IMAGE_TAG   HCD image tag (default 2.0.8-ubi); also read by docker-compose-e2e.yml
+#   HCD_CQL_USERNAME / HCD_CQL_PASSWORD  credentials for --reset-target, if HCD enforces authentication
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -188,10 +190,67 @@ wait_ready() {
   echo "✔ $svc $(state_of "$ctr") (${SECONDS}s)"
 }
 
-if [[ "${1:-}" == "--check" ]]; then
-  preflight
-  exit 0
-fi
+# ── Reset the target ─────────────────────────────────────────────────────────────────────────────────────────
+# Empties the local JanusGraph target so another sample can be migrated: samples that share labels would otherwise
+# add up in the one target graph and fail `validate`. Touches ONLY the jg_migration_test keyspace (AGENTS.md §11),
+# its OpenSearch index and the migration checkpoints in ./out.
+TARGET_KEYSPACE="jg_migration_test"
+
+hcd_cql() {
+  if [[ -n "${HCD_CQL_PASSWORD:-}" ]]; then
+    $RUNTIME exec migrator-hcd cqlsh -u "${HCD_CQL_USERNAME:-cassandra}" -p "$HCD_CQL_PASSWORD" -e "$1"
+  else
+    $RUNTIME exec migrator-hcd cqlsh -e "$1"
+  fi
+}
+
+reset_target() {
+  local assume_yes="$1" answer out code removed
+  for svc in hcd opensearch; do
+    is_ready "$(container_for "$svc")" || fail "$svc is not running — start the stack first: ./docker/up.sh"
+  done
+  if [[ "$assume_yes" != "1" ]]; then
+    [[ -t 0 ]] || fail "--reset-target deletes data; run it in a terminal, or pass --yes to confirm."
+    read -r -p "Delete ALL migrated data in the local target (keyspace $TARGET_KEYSPACE) and the migration checkpoints in ./out? [y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted — nothing changed."; exit 1; }
+  fi
+
+  # Stop JanusGraph first: it cannot write into the keyspace mid-drop, and it deregisters itself cleanly.
+  echo "▶ stopping janusgraph"
+  $RUNTIME stop -t 120 migrator-janusgraph >/dev/null 2>&1 || true
+
+  echo "▶ dropping keyspace $TARGET_KEYSPACE in HCD"
+  if ! out="$(hcd_cql "DROP KEYSPACE IF EXISTS $TARGET_KEYSPACE" 2>&1)"; then
+    echo "$out" | grep -v -i "warning\|recommendation" | tail -3 >&2
+    fail "Could not drop $TARGET_KEYSPACE. If HCD enforces authentication, set HCD_CQL_USERNAME and HCD_CQL_PASSWORD."
+  fi
+
+  echo "▶ deleting OpenSearch index $TARGET_KEYSPACE*"
+  code="$($RUNTIME exec migrator-opensearch curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+    "http://localhost:9200/${TARGET_KEYSPACE}*" 2>/dev/null || echo 000)"
+  [[ "$code" == "200" || "$code" == "404" ]] || fail "Deleting the OpenSearch index failed (HTTP $code)."
+
+  # A re-run of `migrate` would otherwise find every label "already complete" and write nothing.
+  removed="$(ls out/*-migration-checkpoint.db* out/*-id-map.sqlite 2>/dev/null || true)"
+  if [[ -n "$removed" ]]; then
+    rm -f out/*-migration-checkpoint.db* out/*-id-map.sqlite
+    echo "▶ removed migration checkpoints: $(echo "$removed" | tr '\n' ' ')"
+  fi
+
+  echo "▶ starting janusgraph (it recreates an empty $TARGET_KEYSPACE)"
+  $RUNTIME start migrator-janusgraph >/dev/null
+  wait_ready janusgraph
+  echo "Target reset. Migrate again with: dse-jg-migrator run-all … --output-dir ./out"
+}
+
+case "${1:-}" in
+  --check)
+    preflight
+    exit 0 ;;
+  --reset-target)
+    reset_target "$([[ "${2:-}" == "--yes" ]] && echo 1 || echo 0)"
+    exit 0 ;;
+esac
 [[ "${SKIP_PREFLIGHT:-0}" == "1" ]] || preflight
 
 if [[ $# -gt 0 ]]; then
