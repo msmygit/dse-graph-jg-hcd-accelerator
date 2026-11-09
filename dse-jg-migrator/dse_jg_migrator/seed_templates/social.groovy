@@ -1,6 +1,7 @@
 // Template: social
 // Covers: listOf, Timestamp, vertex-centric (RelationIndex), inverse MV edge.
-// Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}
+// Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}; {{V_RANGE}} / {{E_RANGE}} mark a loop the seeder
+// submits in chunks (DSE caps each request at 30 s), e.g. (0..<200), (200..<400), … — the index stays global.
 
 system.graph('{{GRAPH_NAME}}').ifNotExists()
   .withReplication("{'class':'SimpleStrategy','replication_factor':1}")
@@ -41,7 +42,7 @@ schema.edgeLabel('follows').from('user').to('user')
 
 g = {{GRAPH_NAME}}.traversal()
 
-{{VERTEX_COUNT}}.times {
+({{V_RANGE}}).each {
   g.addV('user')
     .property('user_id', UUID.randomUUID())
     .property('username', "user_${it}")
@@ -56,7 +57,7 @@ n = users.size()
 // {{EDGE_COUNT}} distinct follows edges: user k follows user k + 1 + k.intdiv(n) (mod n). DSG keys an edge row by
 // its (out, in) pair, so pairs must be unique — guaranteed while {{EDGE_COUNT}} <= n * (n - 1).
 if (n > 1) {
-  {{EDGE_COUNT}}.times { k ->
+  ({{E_RANGE}}).each { k ->
     g.addE('follows').from(users.get(k % n)).to(users.get((k % n + 1 + k.intdiv(n) % (n - 1)) % n))
       .property('followed_at', java.time.Instant.now()).iterate()
   }
@@ -64,7 +65,9 @@ if (n > 1) {
 
 // One post per user, linked by an authored edge. (Each blank-line-separated block is a separate request,
 // so this block re-reads the users instead of reusing `users`.)
-g.V().hasLabel('user').toList().each { u ->
+users = g.V().hasLabel('user').toList()
+({{V_RANGE}}).each { i ->
+  u = users.get(i)
   p = g.addV('post')
     .property('post_id', UUID.randomUUID())
     .property('content', "Hello from ${g.V(u).values('username').next()}")

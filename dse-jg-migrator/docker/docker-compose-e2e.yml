@@ -22,11 +22,15 @@ services:
 
   # ── TARGET: HCD 2.x (DataStax Hyper-Converged Database) ─────────────────────────
   hcd:
-    image: cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi
+    # Override the tag with HCD_IMAGE_TAG (e.g. HCD_IMAGE_TAG=2.0.9-ubi ./docker/up.sh); default 2.0.8-ubi.
+    image: cp.icr.io/cp/ibm-hyper-converged-database/hcd:${HCD_IMAGE_TAG:-2.0.8-ubi}
     platform: linux/amd64           # HCD ships amd64 only; Rosetta emulation on Apple Silicon
     container_name: migrator-hcd
     networks: [migrator-net]
     mem_limit: 6G
+    # Let it drain on stop/recreate: under emulation the default 10 s kills it mid-flush, and replaying the
+    # commit log on the next start crashed DSE (exit 100, "incompatible schema").
+    stop_grace_period: 2m
     environment:
       - QEMU_CPU=max                # Apple Silicon + QEMU: expose AVX2 (glibc x86-64-v3 check); ignored elsewhere
       - CASSANDRA_LIBJEMALLOC=-     # Apple Silicon + QEMU: the jemalloc LD_PRELOAD segfaults under emulation; harmless elsewhere
@@ -118,6 +122,9 @@ services:
     image: datastax/dse-server:6.9.26-ubi
     container_name: migrator-dse-source
     networks: [migrator-net]
+    # Let it drain on stop/recreate: under emulation the default 10 s kills it mid-flush, and replaying the
+    # commit log on the next start crashed DSE (exit 100, "incompatible schema").
+    stop_grace_period: 2m
     mem_limit: 6G                   # 2G and 4G were OOM-killed under emulation (heap + off-heap + DSE Graph)
     cpus: 8                         # needs a VM with > 8 CPUs (podman machine set --cpus 10); bounded to leave headroom
     # `-g` = Graph workload on top of core Cassandra (env DSE_GRAPH is ignored by this image);

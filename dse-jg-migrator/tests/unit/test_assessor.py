@@ -376,3 +376,36 @@ def test_run_returns_assessment_result() -> None:
     assert isinstance(result.findings, list)
     assert isinstance(result.summary, dict)
     assert "total_findings" in result.summary
+
+
+# ---------------------------------------------------------------------------
+# CF-006: an unreachable source (or a graph with no schema) must never look like a passable assessment
+# ---------------------------------------------------------------------------
+
+
+def test_unreachable_source_emits_cf_006_and_high_risk() -> None:
+    """Found in a fresh-user test: with DSE down, assess reported MEDIUM risk from static advisories and passed."""
+    assessor = _make_assessor()
+    with patch.object(assessor, "_gremlin_submit", side_effect=ConnectionRefusedError("Connect call failed")):
+        result = assessor.run()
+    cf006 = [f for f in result.findings if f.rule_id == "CF-006"]
+    assert (
+        len(cf006) == 1
+        and "ws://localhost:8183/gremlin" in cf006[0].detail
+        and "Connect call failed" in cf006[0].detail
+    )
+    assert result.overall_risk in ("HIGH", "CRITICAL")
+
+
+def test_empty_schema_emits_cf_006() -> None:
+    assessor = _make_assessor()
+    with patch.object(assessor, "_gremlin_submit", return_value=[]):
+        result = assessor.run()
+    assert any(f.rule_id == "CF-006" and "no schema" in f.detail for f in result.findings)
+
+
+def test_readable_schema_emits_no_cf_006() -> None:
+    assessor = _make_assessor()
+    with patch.object(assessor, "_gremlin_submit", return_value=["schema.vertexLabel('person').create()"]):
+        result = assessor.run()
+    assert not any(f.rule_id == "CF-006" for f in result.findings)

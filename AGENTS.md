@@ -510,7 +510,7 @@ strategy:
 
 | Service | Image | Source |
 |---------|-------|--------|
-| HCD | `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` | `hcd-dev/compose.yaml` |
+| HCD | `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` (default; the E2E compose file reads `${HCD_IMAGE_TAG:-2.0.8-ubi}`) | `hcd-dev/compose.yaml` |
 | OpenSearch | `opensearchproject/opensearch:3` | Plan §Sub-Task 8 |
 | JanusGraph | `janusgraph/janusgraph:latest` | Plan §Sub-Task 8 |
 | DSE Graph 6.8 | `datastax/dse-server:6.8.65-ubi7` | Plan §Sub-Task 8 |

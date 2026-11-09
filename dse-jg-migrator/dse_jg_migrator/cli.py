@@ -10,6 +10,8 @@ import click
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn
 
+from dse_jg_migrator.models import UserFacingError
+
 console = Console()
 
 # Shared by translate, migrate and run-all: migrate writes exactly the keys (and value classes) translate created,
@@ -65,12 +67,45 @@ def _load_assessment_risk(json_path: str) -> str:
         return "LOW"
 
 
+# Driver exceptions that mean "the cluster is not reachable" (matched by class name so the CLI does not have to import
+# aiohttp / cassandra-driver at start-up).
+_CONNECTION_ERROR_NAMES = {"ClientConnectionError", "WSServerHandshakeError", "NoHostAvailable", "OperationTimedOut"}
+STACK_HINT = "Is the stack running and healthy? Start it with ./docker/up.sh — it waits until every service is healthy."
+
+
+def _is_connection_error(exc: BaseException) -> bool:
+    """True for a refused / unreachable / timed-out connection from Python, aiohttp or cassandra-driver."""
+    if isinstance(exc, ConnectionError | TimeoutError):
+        return True
+    return any(cls.__name__ in _CONNECTION_ERROR_NAMES for cls in type(exc).__mro__)
+
+
+class _CliGroup(click.Group):
+    """Turns a connection failure in any sub-command into one clear message and exit 1 (AGENTS.md §4.6).
+
+    Without this, a cluster that is not up yet surfaced as a 60-line aiohttp traceback (found in a fresh-user test).
+    """
+
+    def invoke(self, ctx: click.Context) -> Any:  # noqa: ANN401  # click returns the sub-command's arbitrary result
+        try:
+            return super().invoke(ctx)
+        except Exception as exc:
+            if _is_connection_error(exc):
+                console.print(f"[red]✗[/red] Cannot connect: {exc}")
+                console.print(f"  {STACK_HINT}")
+            elif isinstance(exc, UserFacingError):  # e.g. unknown graph, a seed statement DSE rejected
+                console.print(f"[red]✗[/red] {exc}")
+            else:
+                raise
+            raise SystemExit(1) from None
+
+
 # ---------------------------------------------------------------------------
 # CLI group
 # ---------------------------------------------------------------------------
 
 
-@click.group()
+@click.group(cls=_CliGroup)
 def main() -> None:
     """DSE Graph → JanusGraph / HCD Migration Accelerator.
 
@@ -127,7 +162,8 @@ def seed(
     ⚠ WRITES DATA to the source DSE cluster. For demo and development use only.
     Never run against a production cluster.
 
-    The graph is created with ifNotExists() — safe to run multiple times.
+    The schema is created with ifNotExists(), but every run appends data — seed under a
+    new --graph-name to start over.
 
     Examples::
 
@@ -160,7 +196,13 @@ def seed(
         result = seeder.run()
 
     console.print(f"[green]✓[/green] Graph [bold]{result.graph_name}[/bold] seeded successfully.")
-    console.print(f"  Vertices: ~{result.vertex_count:,}  |  Edges: ~{result.edge_count:,}")
+    requested = f"{result.vertex_count:,} vertices / {result.edge_count:,} edges per primary label"
+    if result.total_vertices is not None and result.total_edges is not None:
+        console.print(
+            f"  Graph now holds {result.total_vertices:,} vertices and {result.total_edges:,} edges ({requested})."
+        )
+    else:
+        console.print(f"  Requested {requested}.")
     console.print("\n[bold]Next step:[/bold]")
     console.print(f"  {result.next_command}")
 

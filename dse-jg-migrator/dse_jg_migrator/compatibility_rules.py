@@ -596,6 +596,21 @@ RULES: list[CompatibilityRule] = [
             "storage.cql.replication-strategy-options=<dc>,<rf>."
         ),
     ),
+    CompatibilityRule(
+        rule_id="CF-006",
+        category=Category.CONFIGURATION,
+        severity=Severity.RED,
+        title="Source graph unreachable or has no schema",
+        description="schema.describe() on the source DSE graph failed or returned nothing, so the graph could not be "
+        "assessed. Every other finding in this report is a static advisory, not a result of inspecting the graph.",
+        detection_hint="",
+        jg_equivalent="",
+        docs_link="https://docs.datastax.com/en/dse/6.9/graph/",
+        remediation=(
+            "Check that the DSE source is healthy (./docker/up.sh waits for it), that --source-gremlin-url is "
+            "correct, and that --graph-name exists — seed it first with 'dse-jg-migrator seed' if it does not."
+        ),
+    ),
     # ── OLAP Rules (OL-xxx) ───────────────────────────────────────────────────
     CompatibilityRule(
         rule_id="OL-001",

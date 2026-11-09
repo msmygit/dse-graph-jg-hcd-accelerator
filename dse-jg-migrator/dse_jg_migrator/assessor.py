@@ -56,6 +56,7 @@ class Assessor:
         self._username = username
         self._password = password
         self._raw_schema: str = ""
+        self._source_error: str = ""  # why the source schema could not be read (reported as CF-006)
         self._engine: str = "dsg"
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -75,6 +76,7 @@ class Assessor:
             assessed_at=datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
         )
         self._raw_schema = self._fetch_raw_schema()
+        result.findings += self._assess_source_reachable()
 
         result.findings += self._assess_schema()
         result.findings += self._assess_indexes()
@@ -138,13 +140,29 @@ class Assessor:
 
         Reads from: source DSE Gremlin server.
         """
+        self._source_error = ""
         try:
             parts = self._gremlin_submit(
                 "schema.describe()",
             )
             return "\n".join(str(p) for p in (parts or []))
-        except Exception:  # noqa: BLE001, S110
+        except Exception as exc:  # noqa: BLE001  # recorded and reported as CF-006, never raised (AGENTS.md §4.6)
+            self._source_error = f"schema.describe() on {self.gremlin_url} (graph '{self.graph_name}') failed: {exc}"
             return ""
+
+    def _assess_source_reachable(self) -> list[AssessmentFinding]:
+        """Emit CF-006 when the source schema could not be read (unreachable server, unknown graph, empty schema).
+
+        Reads from: nothing new — uses the result of ``_fetch_raw_schema``. Rules: CF-006.
+        Without it an unreachable source produced a report of static advisories only (MEDIUM risk) that passed the
+        assessment gate (found in a fresh-user test).
+        """
+        if self._raw_schema.strip():
+            return []
+        detail = self._source_error or (
+            f"schema.describe() on {self.gremlin_url} returned no schema for graph '{self.graph_name}'."
+        )
+        return [self._make_finding("CF-006", detail)]
 
     def _build_cluster_overview(self) -> dict[str, Any]:
         """Build a summary dict of cluster statistics from the raw schema."""

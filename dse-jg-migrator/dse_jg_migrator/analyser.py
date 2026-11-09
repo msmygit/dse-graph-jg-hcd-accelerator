@@ -19,6 +19,7 @@ from dse_jg_migrator.models import (
     PropertyDefinition,
     UDTDefinition,
     UDTField,
+    UserFacingError,
     VertexLabelDefinition,
 )
 
@@ -47,6 +48,10 @@ def _quoted(call: str, text: str) -> list[str]:
     """Return the double-quoted arguments of ``.<call>(...)`` in ``text`` (e.g. ``.properties("a", "b")``)."""
     m = re.search(rf"\.{call}\(([^)]*)\)", text)
     return re.findall(r'"([^"]+)"', m.group(1)) if m else []
+
+
+class GraphNotFoundError(UserFacingError):
+    """The source graph does not exist or has no schema — nothing to analyse (never written as an empty analysis)."""
 
 
 class Analyser:
@@ -153,12 +158,24 @@ class Analyser:
         return "dsg"
 
     def _extract_raw_schema(self) -> str:
-        """Fetch the full schema DSL string from DSE Graph via schema.describe()."""
+        """Fetch the full schema DSL string from DSE Graph via schema.describe().
+
+        Raises ``ConnectionError`` (URL and reason) if the source cannot be read, and ``GraphNotFoundError`` if the
+        graph has no schema — an empty analysis was previously written with exit 0 (found in a fresh-user test).
+        """
         try:
             parts = self._gremlin_submit("schema.describe()")
-            return "\n".join(str(p) for p in (parts or []))
-        except Exception:  # noqa: BLE001, S110
-            return ""
+        except Exception as exc:
+            raise ConnectionError(
+                f"analysing graph '{self.graph_name}': schema.describe() on {self.gremlin_url} failed ({exc})"
+            ) from exc
+        schema = "\n".join(str(p) for p in (parts or []))
+        if not schema.strip():
+            raise GraphNotFoundError(
+                f"graph '{self.graph_name}' on {self.gremlin_url} has no schema — check --graph-name, or seed it "
+                "first with 'dse-jg-migrator seed'"
+            )
+        return schema
 
     def _extract_config(self) -> GraphConfig:
         """Extract graph configuration from DSE system metadata."""

@@ -15,3 +15,6 @@ docker/*.properties.local
 
 # local scratch: live-cluster probe scripts and captured output (not part of the AGENTS.md section 3 structure)
 .scratch/
+
+# quick-start / CLI outputs (reports, analysis JSON, checkpoints) written next to the project
+dse-jg-migrator/out/

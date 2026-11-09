@@ -318,6 +318,10 @@ class TranslationResult:
 # ---------------------------------------------------------------------------
 
 
+class UserFacingError(Exception):
+    """An expected failure whose message says what to do; the CLI prints it and exits 1, without a traceback."""
+
+
 @dataclass
 class SeederResult:
     """Result returned by the Seeder after a successful seed operation."""
@@ -327,3 +331,7 @@ class SeederResult:
     vertex_count: int
     edge_count: int
     next_command: str
+    # Counted on the seeded graph. vertex_count/edge_count are the requested sizes *per primary label*, so the
+    # totals differ (e.g. food --vertex-count 100 --edge-count 200 seeds 210 vertices and 500 edges).
+    total_vertices: int | None = None
+    total_edges: int | None = None

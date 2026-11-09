@@ -6,7 +6,7 @@ The E2E stack runs five services:
 
 | Service | Image | Purpose | Host Port |
 |---------|-------|---------|-----------|
-| `hcd` | `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` | Target CQL store | 9042 |
+| `hcd` | `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` (override the tag with `HCD_IMAGE_TAG`) | Target CQL store | 9042 |
 | `opensearch` | `opensearchproject/opensearch:3` | JanusGraph index backend | 9200 |
 | `janusgraph` | `janusgraph/janusgraph:latest` | Target graph engine | 8182 |
 | `dse-graph-source` | `datastax/dse-server:6.9.26-ubi` (6.8: `6.8.65-ubi7` on native amd64) | Source DSE Graph | 9043 (CQL), 8183 (Gremlin) |
@@ -69,7 +69,7 @@ docker login cp.icr.io --username cp      # or: podman login cp.icr.io --usernam
 
 Verify authentication:
 ```bash
-docker pull cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi
+docker pull cp.icr.io/cp/ibm-hyper-converged-database/hcd:${HCD_IMAGE_TAG:-2.0.8-ubi}
 ```
 
 ### 2. System requirements
@@ -122,13 +122,21 @@ Expect roughly 2× (HCD) to much longer (DSE) startup versus native `amd64`.
 ## Starting the stack
 
 ```bash
-# From the dse-jg-migrator/ directory (Docker Compose v2 or Podman):
-./docker/up.sh
+# From the dse-jg-migrator/ directory (Docker or Podman):
+./docker/up.sh            # preflight checks, then start in order and wait until healthy
+./docker/up.sh --check    # preflight only
 
-# Or, with Docker Compose v2, which honours the healthcheck dependencies itself:
-docker compose -f docker/docker-compose-e2e.yml up -d
-docker compose -f docker/docker-compose-e2e.yml ps   # may take several minutes on first start
+# Fallback, Docker Compose v2 only (it honours the healthcheck chain; podman-compose has no --wait):
+docker compose -f docker/docker-compose-e2e.yml up -d --wait --wait-timeout 1800
 ```
+
+The preflight checks the compose tool, that the runtime is running, registry access for the HCD image, and
+≥ 10 CPUs / 20 GiB for containers (printing the exact fix if not). On Apple Silicon with Podman it re-enables the
+QEMU emulation that every VM restart drops (caveat 1 below), so you do not have to.
+
+If a service stops, `up.sh` prints its last log lines — for HCD and DSE also the errors from `system.log`. A DSE
+that exits with code 100 while replaying its commit log was stopped uncleanly with an older compose file (no
+`stop_grace_period`); reset the stack with `down -v` (deletes its data) and start again.
 
 `hcd`, `opensearch`, `janusgraph` and `dse-graph-source` must show `(healthy)` before running migrations.
 The optional `janusgraph-visualizer` has no healthcheck.

@@ -6,10 +6,24 @@ It is a demo/dev utility only. Never run against production.
 
 from __future__ import annotations
 
+import logging
 import re
 from importlib import resources
+from typing import Any
 
-from dse_jg_migrator.models import SeederResult
+from dse_jg_migrator.models import SeederResult, UserFacingError
+
+logger = logging.getLogger(__name__)
+
+# DSE caps every Gremlin request at realtime_evaluation_timeout (30 s) and ignores a per-request override (verified on
+# DSE 6.9), so a template loop marked {{V_RANGE}} / {{E_RANGE}} is submitted in chunks of this many iterations.
+_CHUNK = 200
+_RANGE_TOKENS = {"{{V_RANGE}}": "vertex_count", "{{E_RANGE}}": "edge_count"}
+
+
+class SeedError(UserFacingError):
+    """A seed statement was rejected by DSE; the message names the template, server and statement."""
+
 
 TEMPLATES: frozenset[str] = frozenset({"food", "social", "iot", "enterprise"})
 
@@ -58,7 +72,9 @@ class Seeder:
         # use the "<graph>.g" alias (DSE does not keep `schema = <graph>.schema()` between requests).
         system_client = gremlin_client.Client(self.gremlin_url, "g")
         graph_client = None
+        totals: tuple[int | None, int | None] = (None, None)
         try:
+            self._check_reachable(system_client)
             for statement in self._split_statements(groovy):
                 if _BINDING_RE.fullmatch(statement):
                     continue  # `schema = x.schema()` / `g = x.traversal()` — provided by the alias
@@ -67,7 +83,16 @@ class Seeder:
                     continue
                 if graph_client is None:
                     graph_client = gremlin_client.Client(self.gremlin_url, f"{self.graph_name}.g")
-                graph_client.submit(statement).all().result()
+                for chunk in self._chunks(statement):
+                    try:
+                        graph_client.submit(chunk).all().result()
+                    except Exception as exc:
+                        raise SeedError(
+                            f"seeding the '{self.template}' template on {self.gremlin_url} failed at "
+                            f"'{chunk.splitlines()[0][:80]}': {exc}. Graph '{self.graph_name}' may be partly "
+                            "seeded; re-seed under another --graph-name."
+                        ) from exc
+            totals = self._count(graph_client)
         finally:
             system_client.close()
             if graph_client is not None:
@@ -79,7 +104,53 @@ class Seeder:
             vertex_count=self.vertex_count,
             edge_count=self.edge_count,
             next_command=self._build_assess_hint(),
+            total_vertices=totals[0],
+            total_edges=totals[1],
         )
+
+    def _chunks(self, statement: str) -> list[str]:
+        """Expand a {{V_RANGE}} / {{E_RANGE}} loop into one statement per chunk of ``_CHUNK`` iterations.
+
+        The index range stays global ((0..<200), (200..<400), …), so templates that derive edge pairs from the index
+        produce the same graph whatever the chunk size. A statement without a range token is returned as is.
+        """
+        for token, attr in _RANGE_TOKENS.items():
+            if token in statement:
+                total: int = getattr(self, attr)
+                return [
+                    statement.replace(token, f"{start}..<{min(start + _CHUNK, total)}")
+                    for start in range(0, total, _CHUNK)
+                ]
+        return [statement]
+
+    def _count(self, graph_client: Any) -> tuple[int | None, int | None]:  # noqa: ANN401  # untyped gremlin Client
+        """Count the seeded graph's vertices and edges (read-only, source DSE).
+
+        Returns (None, None) with a warning if counting is not allowed (e.g. a Production-mode graph that forbids
+        full scans) — the seed itself has already succeeded.
+        """
+        if graph_client is None:
+            return None, None
+        try:
+            vertices = graph_client.submit("g.V().count()").all().result()[0]
+            edges = graph_client.submit("g.E().count()").all().result()[0]
+            return int(vertices), int(edges)
+        except Exception as exc:  # noqa: BLE001  # informational only; reported, never hides a seed failure
+            logger.warning("Seeded '%s' but could not count it on %s: %s", self.graph_name, self.gremlin_url, exc)
+            return None, None
+
+    def _check_reachable(self, client: Any) -> None:  # noqa: ANN401  # gremlin-python Client is untyped
+        """Fail fast with operation, host and port if the DSE Gremlin server does not answer (AGENTS.md §4.6).
+
+        Reads from: the source DSE Gremlin server (``1``, a no-op script). Raises ``ConnectionError``.
+        """
+        try:
+            client.submit("1").all().result()
+        except Exception as exc:
+            raise ConnectionError(
+                f"seeding the '{self.template}' template: DSE Gremlin server {self.gremlin_url} "
+                f"is not reachable ({exc})"
+            ) from exc
 
     def _load_template(self) -> str:
         """Load the .groovy template from the package's seed_templates/ directory."""

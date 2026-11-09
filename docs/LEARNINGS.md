@@ -119,3 +119,20 @@ flowchart LR
 Counts hid several bugs: a schema the parser could not read gave "0/0 passed"; templates silently produced 49 edges
 for `--edge-count 100`; UDTs and tuples migrated as their last field only. Every live check here compares source and
 target values field by field (`.scratch/live-probes/cmp_*.py`), plus an index-backed query per index type.
+
+## 9. Onboarding: test the README as a new user would
+
+A fresh-user run of the README failed at step 2, and fixing it surfaced six more problems none of the unit tests or
+the developer workflow had hit:
+
+- `docker compose up -d` under Podman (podman-compose 1.5) returns at once — no `--wait`, no `service_healthy` wait.
+  `./docker/up.sh` is the one start command; Docker Compose v2 users can use `up -d --wait`.
+- podman-compose honours `stop_grace_period` only in its own `stop`/`down`; containers keep a 10 s stop timeout unless
+  created with `--stop-timeout` (`up.sh` passes `--podman-run-args=--stop-timeout=120`). Under emulation 10 s kills
+  DSE mid-flush, and the next start can fail replaying the commit log (exit 100).
+- `podman rm -f` refuses containers that others depend on — remove in reverse dependency order.
+- DSE caps every request at 30 s (`realtime_evaluation_timeout`) and ignores a per-request `evaluationTimeout`; long
+  Groovy loops must be chunked by the client.
+- Silent success is the worst failure: with the source down, `assess` passed its gate and `analyse` wrote an empty
+  analysis. Every stage must fail loudly when it inspected nothing.
+- Defaults must be exercised too: the quick start used small sizes and passed, while `seed`'s own defaults failed.
