@@ -9,8 +9,15 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) forma
 
 ### Added
 
+- Frictionless onboarding (branch `fix/frictionless-onboarding`, PR #3), after a fresh-user test of the README failed at its first step:
+  - README quick start: prerequisites table, then three commands (`./docker/up.sh`, `seed`, `run-all`) with expected times, where results land, stop/resume/reset, and `docker compose … up -d --wait` as the Docker Compose v2 fallback.
+  - `./docker/up.sh` preflight (`--check` runs it alone): compose tool present, runtime running, registry login for the HCD image, ≥ 10 CPUs / 20 GiB for containers (prints the exact fix), and on Apple Silicon + Podman re-enables the QEMU emulation that every VM restart drops. Progress lines while a service boots; a stopped HCD/DSE container is explained from its `system.log`.
+  - `HCD_IMAGE_TAG` selects the HCD image tag (default `2.0.8-ubi`) for the compose file and the preflight.
+  - Rule **CF-006** (RED): source graph unreachable or without schema — 57 rules.
+  - Seeder: scalable template loops (`{{V_RANGE}}` / `{{E_RANGE}}`) are submitted in chunks of 200, so any `--vertex-count` / `--edge-count` stays under DSE's 30 s request cap; `seed` reports the graph's real totals.
+  - `./docker/up.sh --reset-target [--yes]`: empties only the local target (`jg_migration_test` keyspace, its OpenSearch index, `./out` checkpoints) so another sample can be migrated without `down -v`; asks first unless `--yes`. `tests/e2e` now uses it for its reset (one implementation; the E2E's default-password literal is gone).
 - **ST-1**: Project scaffold — `pyproject.toml`, directory structure, stub modules, `models.py`, `config.py`.
-- **ST-0**: Pre-migration compatibility assessor with 56 rules across 8 categories (`compatibility_rules.py`, `assessor.py`, `assessment_reporter.py`). MD/JSON/HTML report output. CLI `assess` command with `--target-cql-host` HCD pre-flight option and `--skip-assessment-gate`.
+- **ST-0**: Pre-migration compatibility assessor with 57 rules across 8 categories (CF-006 added in #3) (`compatibility_rules.py`, `assessor.py`, `assessment_reporter.py`). MD/JSON/HTML report output. CLI `assess` command with `--target-cql-host` HCD pre-flight option and `--skip-assessment-gate`.
 - **ST-2**: DSE Graph schema analyser (`analyser.py`) — engine detection, DSL parsing, CQL count enrichment, JSON output.
 - **ST-3**: Schema translator (`translator.py`) — full type mapping, UDT flat/json strategy, mapOf flat/json strategy, composite/mixed/vertex-centric index translation, auto geo mixed index for Point properties.
 - **ST-4**: JanusGraph / HCD target schema initialiser (`initialiser.py`) — gremlin-script and server-restart modes, index enablement polling, schema verification.
@@ -59,6 +66,11 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) forma
 
 ### Fixed
 
+- (#3) Quick start step 1 (`docker compose up -d`) returned before the stack was healthy under Podman, so step 2 failed; DSE could also crash on start (exit 100, commit-log replay "incompatible schema") after an unclean stop. `stop_grace_period: 2m` for HCD/DSE (podman-compose applies it only in its own `stop`/`down`, so `up.sh` also sets `--stop-timeout=120` on the containers); a stop now logs "DSE shutdown complete" and the next start replays nothing.
+- (#3) `seed` and other commands printed a 60-line aiohttp traceback when a cluster was unreachable; the CLI now prints one line (operation, host, port, hint) and exits 1. Unexpected errors still raise.
+- (#3) With the source unreachable, `assess` reported MEDIUM risk from static advisories (passing the gate) and `analyse` wrote an empty analysis with exit 0. Now CF-006 (HIGH risk) and a clear `analyse` failure.
+- (#3) `seed` with its documented defaults (1000 / 5000) exceeded DSE's 30 s request cap under emulation and failed with a traceback, leaving a partial graph; loops are now chunked and a rejected statement raises a clear `SeedError`.
+- (#3) Docs claimed the seeder is idempotent; only schema creation is — data is appended on each run (plan, `seed --help` and README corrected).
 Found by running against live DSE 6.8/6.9 sources and a live JanusGraph + HCD + OpenSearch target (Podman on Apple Silicon):
 
 - `initialiser.py`: every schema script failed on a real JanusGraph server ("enclosing transaction is closed") because it ended on `mgmt.commit();`. Rewritten as ONE idempotent, rollback-on-error management transaction that returns a value. Keys and indexes are created in one transaction so new indexes are ENABLED at once; an index over an already-committed key is promoted (see Added). Index status is read per key (`getIndexStatus()` with no argument fails); `verify_schema` now checks keys, labels and indexes.

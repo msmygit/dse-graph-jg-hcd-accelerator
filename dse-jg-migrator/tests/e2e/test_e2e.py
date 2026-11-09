@@ -11,9 +11,9 @@ The container runtime is auto-detected (docker, then podman). Override with
 CONTAINER_RUNTIME=podman|docker. Start the stack with ``./docker/up.sh`` (Podman-safe ordering).
 The ``food`` template uses ``searchIndex()``, so dse-graph-source must run with DSE Search (``-s``).
 
-Idempotent: the session resets the target before and after the run — it drops ONLY the
-``jg_migration_test`` keyspace (AGENTS.md §5.6/§11) and its OpenSearch index, then restarts JanusGraph so it
-recreates an empty keyspace.
+Idempotent: the session resets the target before and after the run with ``./docker/up.sh --reset-target --yes``,
+which drops ONLY the ``jg_migration_test`` keyspace (AGENTS.md §5.6/§11) and its OpenSearch index and restarts
+JanusGraph so it recreates an empty keyspace.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import os
 import shutil
 import subprocess
 import time
-import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -35,9 +35,8 @@ SOURCE_CQL_PORT = int(os.environ.get("SOURCE_CQL_PORT", "9043"))
 TARGET_GREMLIN = os.environ.get("TARGET_GREMLIN_URL", "ws://localhost:8182/gremlin")
 TARGET_CQL_HOST = os.environ.get("TARGET_CQL_HOST", "localhost")
 TARGET_CQL_PORT = int(os.environ.get("TARGET_CQL_PORT", "9042"))
-TARGET_OPENSEARCH = os.environ.get("TARGET_OPENSEARCH_URL", "http://localhost:9200")
 GRAPH_NAME = "food"
-TARGET_KEYSPACE = "jg_migration_test"  # the only keyspace E2E may drop (AGENTS.md §11)
+UP_SH = Path(__file__).resolve().parents[2] / "docker" / "up.sh"  # also performs the target reset
 # The optional janusgraph-visualizer has no healthcheck, so it is not waited for.
 _REQUIRED_CONTAINERS = {"migrator-hcd", "migrator-opensearch", "migrator-janusgraph", "migrator-dse-source"}
 
@@ -84,28 +83,18 @@ def _run_cmd(*args: str) -> subprocess.CompletedProcess:  # type: ignore[type-ar
 
 
 def _reset_target() -> None:
-    """Drop ONLY the jg_migration_test keyspace and its OpenSearch index, then restart JanusGraph.
+    """Empty the local target with ``./docker/up.sh --reset-target --yes`` — the same command users run.
 
-    JanusGraph recreates an empty keyspace (``schema.default=none``) on start. Writes only to the local E2E
-    target stack.
+    It drops ONLY the jg_migration_test keyspace (AGENTS.md §11) and its OpenSearch index, clears the migration
+    checkpoints in ./out, restarts JanusGraph and waits until it is healthy. One implementation, not a copy.
     """
-    from cassandra.auth import PlainTextAuthProvider
-    from cassandra.cluster import Cluster
-
-    auth = PlainTextAuthProvider(
-        os.environ.get("HCD_CQL_USERNAME", "cassandra"), os.environ.get("HCD_CQL_PASSWORD", "cassandra")
+    env = dict(os.environ)
+    if os.environ.get("CONTAINER_RUNTIME"):
+        env["RUNTIME"] = os.environ["CONTAINER_RUNTIME"]
+    result = subprocess.run(  # noqa: S603  # fixed script path from this repository, no user input
+        [str(UP_SH), "--reset-target", "--yes"], capture_output=True, text=True, env=env, timeout=600, check=False
     )
-    cluster = Cluster([TARGET_CQL_HOST], port=TARGET_CQL_PORT, auth_provider=auth)
-    try:
-        cluster.connect().execute(f"DROP KEYSPACE IF EXISTS {TARGET_KEYSPACE}")  # constant, not user input
-    finally:
-        cluster.shutdown()
-    request = urllib.request.Request(f"{TARGET_OPENSEARCH}/{TARGET_KEYSPACE}*", method="DELETE")  # noqa: S310
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310  # fixed local http URL
-        assert response.status == 200
-    runtime = _container_runtime()
-    assert runtime, "no container runtime found"
-    subprocess.run([runtime, "restart", "migrator-janusgraph"], check=True, capture_output=True)  # noqa: S603
+    assert result.returncode == 0, f"target reset failed:\n{result.stdout}\n{result.stderr}"
 
 
 @pytest.fixture(scope="session", autouse=True)

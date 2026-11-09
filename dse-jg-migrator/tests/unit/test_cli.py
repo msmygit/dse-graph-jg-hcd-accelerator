@@ -376,3 +376,72 @@ def test_run_all_full_pipeline_with_seed(runner: CliRunner, tmp_path: Path) -> N
     init_cls.assert_called_once()
     assert init_cls.call_args.kwargs["index_timeout_s"] == 1800
     assert (tmp_path / "food-migration-report.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Connection failures: one clear line, exit 1, no traceback (found in a fresh-user test)
+# ---------------------------------------------------------------------------
+
+
+def test_connection_failure_prints_one_line_and_exits_1(runner: CliRunner) -> None:
+    with patch("dse_jg_migrator.seeder.Seeder") as seeder_cls:
+        seeder_cls.return_value.run.side_effect = ConnectionError(
+            "seeding the 'food' template: DSE Gremlin server ws://localhost:8183/gremlin is not reachable"
+        )
+        res = runner.invoke(main, ["seed", "--source-gremlin-url", GREMLIN, "--template", "food", "--confirm"])
+    out = " ".join(res.output.split())
+    assert res.exit_code == 1
+    assert "Cannot connect" in out and "ws://localhost:8183/gremlin" in out and "./docker/up.sh" in out
+    assert "Traceback" not in res.output
+
+
+def test_driver_connection_errors_are_recognised_by_class_name() -> None:
+    from dse_jg_migrator.cli import _is_connection_error
+
+    class NoHostAvailable(Exception):  # noqa: N818  # same name as cassandra.cluster.NoHostAvailable, by design
+        pass
+
+    class ClientConnectionError(Exception):  # stands in for aiohttp's base connection error
+        pass
+
+    class ClientConnectorError(ClientConnectionError):
+        pass
+
+    assert _is_connection_error(NoHostAvailable()) and _is_connection_error(ClientConnectorError())
+    assert _is_connection_error(ConnectionRefusedError()) and _is_connection_error(TimeoutError())
+    assert not _is_connection_error(ValueError("bug")) and not _is_connection_error(FileNotFoundError())
+
+
+def test_graph_not_found_is_reported_without_traceback(runner: CliRunner, tmp_path: Path) -> None:
+    from dse_jg_migrator.analyser import GraphNotFoundError
+
+    with patch("dse_jg_migrator.analyser.Analyser") as analyser_cls:
+        analyser_cls.return_value.run.side_effect = GraphNotFoundError(
+            "graph 'nope' on ws://x:8183/gremlin has no schema"
+        )
+        res = runner.invoke(
+            main,
+            ["analyse", "--source-gremlin-url", GREMLIN, "--source-cql-host", "h", "--graph-name", "nope"]
+            + ["--output-dir", str(tmp_path)],
+        )
+    assert res.exit_code == 1 and "has no schema" in res.output and "Traceback" not in res.output
+
+
+def test_unexpected_errors_still_raise(runner: CliRunner) -> None:
+    """Only connection / graph-not-found errors are softened; real bugs must surface."""
+    with patch("dse_jg_migrator.seeder.Seeder") as seeder_cls:
+        seeder_cls.return_value.run.side_effect = ValueError("bug")
+        res = runner.invoke(main, ["seed", "--source-gremlin-url", GREMLIN, "--template", "food", "--confirm"])
+    assert res.exit_code != 0 and isinstance(res.exception, ValueError)
+
+
+def test_seed_prints_counted_totals_or_the_requested_sizes(runner: CliRunner) -> None:
+    with patch("dse_jg_migrator.seeder.Seeder") as seeder_cls:
+        seeder_cls.return_value.run.return_value = SeederResult("food", "food", 100, 200, "next", 210, 500)
+        res = runner.invoke(main, ["seed", "--source-gremlin-url", GREMLIN, "--template", "food", "--confirm"])
+    out = " ".join(res.output.split())
+    assert res.exit_code == 0 and "210 vertices and 500 edges" in out and "per primary label" in out
+    with patch("dse_jg_migrator.seeder.Seeder") as seeder_cls:
+        seeder_cls.return_value.run.return_value = SeederResult("food", "food", 100, 200, "next")
+        res = runner.invoke(main, ["seed", "--source-gremlin-url", GREMLIN, "--template", "food", "--confirm"])
+    assert "Requested 100 vertices / 200 edges per primary label" in " ".join(res.output.split())

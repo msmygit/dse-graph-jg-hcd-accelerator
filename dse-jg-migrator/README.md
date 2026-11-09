@@ -10,44 +10,72 @@ For the full implementation plan see
 
 ---
 
-## Installation
+## Quick start — zero to a migrated graph
+
+### Prerequisites (one time)
+
+| You need | How |
+|---|---|
+| A container runtime | **Docker Desktop**, or **Podman** + podman-compose: `brew install podman podman-compose && podman machine init --cpus 10 --memory 20480 && podman machine start` |
+| ≥ 10 CPUs and 20 GiB for containers | Docker Desktop → Settings → Resources (`./docker/up.sh` checks this and prints the fix) |
+| Access to the IBM registry (HCD image) | `docker login cp.icr.io --username cp` (Podman: `podman login …`) — paste your entitlement key from [MyIBM](https://myibm.ibm.com/products-services/containerlibrary) |
+| Python 3.12+ | `cd dse-jg-migrator && python3 -m venv .venv && source .venv/bin/activate && pip install -e .` |
+
+### Three steps (from `dse-jg-migrator/`)
 
 ```bash
-cd dse-jg-migrator
-pip install -e .
-```
+# 1. Start the stack: checks prerequisites, then starts every service and waits until all are healthy.
+#    First run: 5–15 min (image pulls; DSE boots in ~4 min under emulation on Apple Silicon). Later: a few min.
+#    Another HCD version? HCD_IMAGE_TAG=<tag> ./docker/up.sh   (default 2.0.8-ubi)
+./docker/up.sh
 
-### IBM ICR authentication (required for HCD Docker image)
-
-```bash
-docker login cp.icr.io --username cp
-# When prompted for password, paste your IBM Entitled Registry entitlement key.
-# Key available at: https://myibm.ibm.com/products-services/containerlibrary
-```
-
----
-
-## Quick start (zero-to-migration demo)
-
-```bash
-# 1. Start the E2E stack
-docker compose -f docker/docker-compose-e2e.yml up -d
-
-# 2. Seed the source DSE Graph with the food sample workload
+# 2. Seed the source DSE graph with the "food" sample workload (~1 min).
 dse-jg-migrator seed \
   --source-gremlin-url ws://localhost:8183/gremlin \
-  --template food \
+  --template food --vertex-count 100 --edge-count 200 \
   --confirm
 
-# 3. Run the full migration pipeline
+# 3. Migrate it: assess → analyse → translate → init-target → migrate → validate → report (~1 min).
 dse-jg-migrator run-all \
   --source-gremlin-url ws://localhost:8183/gremlin \
   --source-cql-host localhost --source-cql-port 9043 \
   --graph-name food \
   --target-gremlin-url ws://localhost:8182/gremlin \
   --target-cql-host localhost --target-cql-port 9042 \
-  --skip-assessment-gate
+  --output-dir ./out \
+  --skip-assessment-gate   # the food sample deliberately includes features the assessment flags RED
 ```
+
+Results are in `./out/`: start with `food-migration-report.md`, then `food-validation-report.md` (source vs target
+counts) and `food-assessment-report.html`.
+
+**Trying another sample?** Seed it under its own name (`--template social --graph-name social`, …); re-seeding the same
+name appends data. The local target is one JanusGraph graph, so empty it before migrating the next sample —
+otherwise samples with the same labels add up there and `validate` reports a mismatch:
+
+```bash
+./docker/up.sh --reset-target   # asks first; empties ONLY the local target + ./out checkpoints (~45 s)
+```
+
+Your seeded source graphs are kept, so you can migrate them again at any time.
+
+**Stop / resume / reset**
+
+```bash
+podman-compose -f docker/docker-compose-e2e.yml stop     # keep data (Docker: docker compose … stop)
+./docker/up.sh                                           # resume
+./docker/up.sh --reset-target                            # empty only the migration target (keeps source data)
+podman-compose -f docker/docker-compose-e2e.yml down -v  # delete everything, including seeded data
+```
+
+**Fallback without `up.sh`** (Docker Compose v2 only — podman-compose has no `--wait`):
+
+```bash
+docker compose -f docker/docker-compose-e2e.yml up -d --wait --wait-timeout 1800
+```
+
+If something fails, the CLI says which host and port it could not reach; `./docker/up.sh` explains a container
+that stopped. More detail, including Apple Silicon notes: [`docker/README.md`](docker/README.md).
 
 ---
 

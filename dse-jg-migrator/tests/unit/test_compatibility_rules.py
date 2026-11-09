@@ -84,8 +84,8 @@ def test_ix_rules_present() -> None:
 
 
 def test_cf_rules_present() -> None:
-    """Configuration rules CF-001 through CF-005 must all exist."""
-    for n in range(1, 6):
+    """Configuration rules CF-001 through CF-006 must all exist."""
+    for n in range(1, 7):
         rule_id = f"CF-{n:03d}"
         assert rule_id in RULES_BY_ID, f"Missing rule {rule_id}"
 
@@ -119,8 +119,8 @@ def test_hc_rules_present() -> None:
 
 
 def test_total_rule_count() -> None:
-    """Exactly 56 rules should exist (QP-017 + SC-008 + IX-008 + CF-005 + OL-003 + SE-002 + TP-005 + HC-008)."""
-    assert len(RULES) == 56, f"Expected 56 rules, got {len(RULES)}"
+    """Exactly 57 rules should exist (QP-017 + SC-008 + IX-008 + CF-006 + OL-003 + SE-002 + TP-005 + HC-008)."""
+    assert len(RULES) == 57, f"Expected 57 rules, got {len(RULES)}"
 
 
 def test_hc_006_is_green() -> None:
@@ -154,3 +154,10 @@ def test_red_rules_have_empty_jg_equivalent_or_note() -> None:
     for rule_id in red_blockers_no_auto:
         rule = RULES_BY_ID[rule_id]
         assert rule.severity == Severity.RED, f"{rule_id} expected RED"
+
+
+def test_cf_006_source_unreachable_is_red() -> None:
+    """CF-006 is RED, so an unreachable source makes the assessment gate stop run-all (found in a fresh-user test)."""
+    rule = RULES_BY_ID["CF-006"]
+    assert rule.severity == Severity.RED
+    assert "seed" in rule.remediation and "up.sh" in rule.remediation

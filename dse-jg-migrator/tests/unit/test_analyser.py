@@ -369,3 +369,32 @@ def test_run_uses_the_classic_parser_for_classic_graphs(tmp_path) -> None:  # ty
         result = analyser.run()
     assert result.engine == "classic"
     assert [vl.label for vl in result.vertex_labels] == ["person"] and result.vertex_labels[0].count == 10
+
+
+# ---------------------------------------------------------------------------
+# No empty analysis: an unreachable source or unknown graph fails (found in a fresh-user test: exit 0, 0 labels)
+# ---------------------------------------------------------------------------
+
+
+def test_unreachable_source_raises_connection_error_with_url() -> None:
+    import pytest
+
+    analyser = _make_analyser()
+    with (
+        patch.object(analyser, "_gremlin_submit", side_effect=ConnectionRefusedError("Connect call failed")),
+        pytest.raises(ConnectionError, match="ws://localhost:8183/gremlin"),
+    ):
+        analyser._extract_raw_schema()
+
+
+def test_graph_without_schema_raises_graph_not_found() -> None:
+    import pytest
+
+    from dse_jg_migrator.analyser import GraphNotFoundError
+
+    analyser = _make_analyser()
+    with (
+        patch.object(analyser, "_gremlin_submit", return_value=[]),
+        pytest.raises(GraphNotFoundError, match="'food'.*seed"),
+    ):
+        analyser._extract_raw_schema()

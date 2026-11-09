@@ -311,6 +311,7 @@ The catalogue must contain (at minimum) the following rules, derived from the co
 | `CF-003` | YELLOW | `graph.allow_scan = true` | JanusGraph: no direct equivalent; ensure indexes exist or set `query.force-index=false` |
 | `CF-004` | YELLOW | `traversal_sources.*.restrict_lambda = true` | JanusGraph: lambdas allowed by default; `evaluationTimeout` controls execution time |
 | `CF-005` | YELLOW | `graph.system_replication_config` | JanusGraph: configure via `storage.cql.replication-strategy-*` |
+| `CF-006` | RED | Source graph unreachable, or `schema.describe()` returns no schema | Nothing to assess or migrate — check the Gremlin URL, that DSE is healthy, and `--graph-name` |
 
 **OLAP Rules (OL-xxx):**
 
@@ -2040,7 +2041,7 @@ docker login cp.icr.io --username cp
 
      # ── TARGET: HCD 2.x (IBM Hyper-Converged Database) ─────────────────────
      hcd:
-       image: cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi
+       image: cp.icr.io/cp/ibm-hyper-converged-database/hcd:${HCD_IMAGE_TAG:-2.0.8-ubi}   # tag overridable; default 2.0.8-ubi
        platform: linux/amd64           # HCD ships amd64 only; Rosetta emulation on Apple Silicon
        container_name: migrator-hcd
        networks: [migrator-net]
@@ -2286,8 +2287,33 @@ docker login cp.icr.io --username cp
    skips services that are already healthy, never restarts a service that is still starting, and works with
    Docker Compose v2 as well. Documented in `docker/README.md`.
 
+7. **Frictionless onboarding (added after a fresh-user test of the README failed at step 2).** The README quick
+   start is three commands — `./docker/up.sh`, `dse-jg-migrator seed …`, `dse-jg-migrator run-all …` — with
+   `docker compose -f docker/docker-compose-e2e.yml up -d --wait` documented as the fallback for Docker Compose v2
+   (podman-compose 1.5 has no `--wait` and does not reliably honour `service_healthy`). To remove setup friction:
+   - `up.sh` runs a **preflight** first: registry login to `cp.icr.io` present (else prints the `login` command);
+     on Podman, VM resources ≥ 10 CPUs / 20 GiB (else prints the exact `podman machine set` command — resizing
+     restarts the VM, so it is never done automatically); on Apple Silicon, the QEMU binfmt registration is
+     re-applied automatically when missing (it is lost on every VM restart).
+   - `stop_grace_period: 2m` on `hcd` and `dse-graph-source`: under emulation the default 10 s stop timeout kills
+     them mid-flush, and replaying the commit log on the next start crashed DSE (exit 100, "incompatible schema").
+   - The CLI turns a connection failure into one descriptive line (operation, host, port) plus the hint to run
+     `./docker/up.sh`, and exits 1 — no traceback (AGENTS.md §4.6).
+   - **No false success when the source is unreachable** (found in the same test): `assess` reported MEDIUM risk
+     from static advisories alone and `analyse` wrote an empty analysis with exit 0. Now `assess` emits rule
+     **CF-006** (RED → the gate stops `run-all`) and `analyse` fails with the URL and reason.
+   - The HCD image tag is configurable: `HCD_IMAGE_TAG` (default `2.0.8-ubi`), read by the compose file and by
+     the `up.sh` registry check.
+   - `./docker/up.sh --reset-target [--yes]` empties the local target so another sample can be migrated (samples
+     sharing labels otherwise add up in the one target graph and fail `validate`). After a confirmation prompt it
+     stops JanusGraph, drops **only** the `jg_migration_test` keyspace (AGENTS.md §11) and its OpenSearch index,
+     removes the migration checkpoints in `./out/` (else a re-run would skip everything as already migrated), then
+     starts JanusGraph, which recreates an empty keyspace. Credentials come from `HCD_CQL_USERNAME` /
+     `HCD_CQL_PASSWORD` if set (none are committed). `tests/e2e` uses the same command for its reset (one
+     implementation).
+
 ### Relevant Context
-- HCD image: `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` (from `hcd-dev/compose.yaml:3`)
+- HCD image: `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` (from `hcd-dev/compose.yaml:3`) — the default; the E2E stack reads the tag from `HCD_IMAGE_TAG` so users can test another HCD release without editing the compose file
 - HCD Data API image: `cp.icr.io/cp/cpd/ibm-datastax-hcd/data-api:v1.0.53` (optional for this stack — not needed by JanusGraph)
 - HCD cassandra.yaml key settings: `cluster_name=hcd_cluster`, `authenticator=AdvancedAuthenticator` (password auth enabled), `dc1`, `materialized_views_enabled=false`, `default_secondary_index=sai`, `storage_compatibility_mode=NONE`, `hcd_guardrail_defaults=true`
 - OpenSearch image: `opensearchproject/opensearch:3` — requires `plugins.security.disabled=true` for local dev (OpenSearch 2.12+ enforces security by default)
@@ -2306,7 +2332,16 @@ docker login cp.icr.io --username cp
 > **⚠️ This sub-task writes data to the source DSE Graph cluster.**
 > It is a **developer / demo utility only** and must never be run against a production DSE cluster.
 > All writes are gated behind an explicit `--confirm` flag or an interactive prompt.
-> The seeder is idempotent — running it twice produces the same result.
+> Schema creation is idempotent (`ifNotExists()`), but each run **appends** data — to start over, seed under a
+> new `--graph-name` (corrected after live testing; an earlier version of this note claimed full idempotency).
+>
+> **Chunked loops (live finding).** DSE caps every Gremlin request at `realtime_evaluation_timeout` (30 s) and ignores
+> a per-request `evaluationTimeout` override (verified on DSE 6.9), so the CLI defaults (1000 / 5000) failed under
+> emulation. Templates mark scalable loops `({{V_RANGE}}).each` / `({{E_RANGE}}).each { k -> … }`; the seeder submits
+> each in chunks of 200 iterations with a global index, so edge-pair formulas are unaffected. Verified: `iot` 1000/5000
+> (6,000 V / 5,000 E) in 95 s and `food` 1000/5000 (1,600 V / 11,000 E) in 89 s, then migrated by `run-all`. A
+> rejected statement raises `SeedError` (template, server, statement) instead of a traceback, and `seed` reports the
+> graph's real vertex/edge totals rather than the per-label request.
 
 ### Intent
 
@@ -3184,7 +3219,7 @@ handled in code and covered by a regression unit test; details in `docs/LEARNING
 
 Complete reference for all rules implemented in `compatibility_rules.py`. Each rule is uniquely identified by its `rule_id` and maps directly to a detection method in `assessor.py`.
 
-**Total: 56 rules** — QP 17, SC 8, IX 8, HC 8, CF 5, TP 5, OL 3, SE 2 (verified against `RULES` in `compatibility_rules.py`; `tests/unit/test_compatibility_rules.py` guards the catalogue).
+**Total: 57 rules** — QP 17, SC 8, IX 8, HC 8, CF 6, TP 5, OL 3, SE 2 (verified against `RULES` in `compatibility_rules.py`; `tests/unit/test_compatibility_rules.py` guards the catalogue).
 
 ### Rule ID Naming Convention
 
@@ -3255,6 +3290,7 @@ Complete reference for all rules implemented in `compatibility_rules.py`. Each r
 | `CF-003` | YELLOW | `allow_scan.*true` | Ensure indexes cover all traversals; `query.force-index=false` disables enforcement | [JanusGraph Index Performance](https://docs.janusgraph.org/index-management/index-performance/) |
 | `CF-004` | YELLOW | `restrict_lambda.*true` | `evaluationTimeout` (ms) in gremlin-server.yaml | [Gremlin Server Config](https://tinkerpop.apache.org/docs/current/reference/#gremlin-server) |
 | `CF-005` | YELLOW | `system_replication_config` in graph describe | `storage.cql.replication-strategy-class` + `storage.cql.replication-strategy-options` | [JanusGraph CQL](https://docs.janusgraph.org/storage-backend/cassandra/) |
+| `CF-006` | RED | `schema.describe()` on the source fails or is empty | Start the DSE source / fix `--source-gremlin-url` and `--graph-name`; seed the graph if it does not exist yet | [DSE Graph](https://docs.datastax.com/en/dse/6.9/graph/) |
 
 #### OLAP Rules
 

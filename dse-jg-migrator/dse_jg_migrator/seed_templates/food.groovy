@@ -1,7 +1,8 @@
 // Template: food
 // Covers: Uuid partition key, MV index, searchIndex (text + string),
 //         setOf, mapOf, geo Point, edge properties.
-// Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}
+// Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}; {{V_RANGE}} / {{E_RANGE}} mark a loop the seeder
+// submits in chunks (DSE caps each request at 30 s), e.g. (0..<200), (200..<400), … — the index stays global.
 
 system.graph('{{GRAPH_NAME}}').ifNotExists()
   .withReplication("{'class':'SimpleStrategy','replication_factor':1}")
@@ -56,7 +57,7 @@ schema.edgeLabel('knows').from('person').to('person')
 
 g = {{GRAPH_NAME}}.traversal()
 
-{{VERTEX_COUNT}}.times {
+({{V_RANGE}}).each {
   g.addV('person')
     .property('person_id', UUID.randomUUID())
     .property('name', "Person_${it}")
@@ -92,7 +93,7 @@ people  = g.V().hasLabel('person').toList()
 recipes = g.V().hasLabel('recipe').toList()
 n = people.size()
 m = recipes.size()
-{{EDGE_COUNT}}.times { k ->
+({{E_RANGE}}).each { k ->
   if (n > 1) {
     g.addE('knows').from(people.get(k % n)).to(people.get((k % n + 1 + k.intdiv(n) % (n - 1)) % n))
       .property('since', java.time.LocalDate.now().minusDays(k)).iterate()
@@ -103,6 +104,7 @@ m = recipes.size()
 
 // Each person is located at one location (re-reads vertices: every blank-line block is a separate request).
 places = g.V().hasLabel('location').toList()
-g.V().hasLabel('person').toList().eachWithIndex { p, i ->
-  g.addE('located_at').from(p).to(places.get(i % places.size())).iterate()
+people = g.V().hasLabel('person').toList()
+({{V_RANGE}}).each { i ->
+  g.addE('located_at').from(people.get(i)).to(places.get(i % places.size())).iterate()
 }

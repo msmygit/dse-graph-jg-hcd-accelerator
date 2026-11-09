@@ -2,7 +2,8 @@
 // Purpose: DELIBERATELY triggers RED findings in assess output so operators
 //          can see what a HIGH/CRITICAL risk assessment looks like.
 // Covers: UDT (frozen typeOf), tupleOf, OLAP source, RLAC marker.
-// Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}
+// Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}; {{V_RANGE}} / {{E_RANGE}} mark a loop the seeder
+// submits in chunks (DSE caps each request at 30 s), e.g. (0..<200), (200..<400), … — the index stays global.
 
 system.graph('{{GRAPH_NAME}}').ifNotExists()
   .withReplication("{'class':'SimpleStrategy','replication_factor':1}")
@@ -48,7 +49,7 @@ schema.vertexLabel('project').searchIndex().ifNotExists()
 
 g = {{GRAPH_NAME}}.traversal()
 
-{{VERTEX_COUNT}}.times {
+({{V_RANGE}}).each {
   g.addV('employee')
     .property('employee_id', UUID.randomUUID())
     .property('name', "Employee_${it}")
@@ -72,7 +73,7 @@ projectCount.times {
 employees = g.V().hasLabel('employee').toList()
 projects  = g.V().hasLabel('project').toList()
 n = employees.size()
-{{EDGE_COUNT}}.times { k ->
+({{E_RANGE}}).each { k ->
   g.addE('works_on').from(employees.get(k % n)).to(projects.get((k % n + k.intdiv(n)) % projects.size()))
     .property('since', java.time.LocalDate.now())
     .property('role', ['lead','contributor','reviewer'].get(k % 3))

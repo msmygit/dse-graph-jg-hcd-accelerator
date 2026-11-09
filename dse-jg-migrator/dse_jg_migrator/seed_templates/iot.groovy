@@ -1,7 +1,8 @@
 // Template: iot
 // Covers: Bigint, Double, Float, Timestamp, Duration (CQL months/days/nanos), Decimal (exact and beyond
 // Double precision), composite multi-key index.
-// Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}
+// Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}; {{V_RANGE}} / {{E_RANGE}} mark a loop the seeder
+// submits in chunks (DSE caps each request at 30 s), e.g. (0..<200), (200..<400), … — the index stays global.
 
 system.graph('{{GRAPH_NAME}}').ifNotExists()
   .withReplication("{'class':'SimpleStrategy','replication_factor':1}")
@@ -37,7 +38,7 @@ schema.vertexLabel('device').secondaryIndex('device_by_type').ifNotExists()
 
 g = {{GRAPH_NAME}}.traversal()
 
-{{VERTEX_COUNT}}.times {
+({{V_RANGE}}).each {
   g.addV('device')
     .property('device_id', UUID.randomUUID())
     .property('name', "Device_${it}")
@@ -51,7 +52,7 @@ g = {{GRAPH_NAME}}.traversal()
 }
 
 devices = g.V().hasLabel('device').toList()
-{{EDGE_COUNT}}.times {
+({{E_RANGE}}).each {
   d = devices.get((int)(Math.random() * devices.size()))
   r = g.addV('reading')
     .property('device_id', g.V(d).values('device_id').next())
