@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -198,16 +199,25 @@ def test_run_closes_client_on_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_build_assess_hint_contains_url_and_name() -> None:
-    seeder = Seeder(
-        gremlin_url="ws://localhost:8183/gremlin",
-        template="food",
-        graph_name="myfood",
-    )
-    hint = seeder._build_assess_hint()
-    assert "ws://localhost:8183/gremlin" in hint
-    assert "myfood" in hint
-    assert "assess" in hint
+@pytest.mark.parametrize(
+    ("gremlin_url", "cql_host", "cql_port"),
+    [
+        ("ws://localhost:8183/gremlin", "localhost", 9043),  # the local Docker stack's DSE
+        ("ws://dse.example:8182/gremlin", "dse.example", 9042),
+    ],
+)
+def test_build_assess_hint_is_a_runnable_assess_command(gremlin_url: str, cql_host: str, cql_port: int) -> None:
+    """Live finding: the hint omitted the required --source-cql-host, so copying it failed."""
+    from dse_jg_migrator.cli import assess
+
+    hint = Seeder(gremlin_url=gremlin_url, template="food", graph_name="myfood")._build_assess_hint()
+    prog, command, *args = shlex.split(hint)
+    assert (prog, command) == ("dse-jg-migrator", "assess")
+    params = assess.make_context("assess", args).params
+    assert params["source_gremlin_url"] == gremlin_url
+    assert params["source_cql_host"] == cql_host
+    assert params["source_cql_port"] == cql_port
+    assert params["graph_name"] == "myfood"
 
 
 # ---------------------------------------------------------------------------

@@ -2511,12 +2511,21 @@ class Seeder:
         return [s.strip() for s in groovy.split("\n\n") if s.strip()]
 
     def _build_assess_hint(self) -> str:
+        # The source CQL host is the Gremlin URL's host; the local Docker stack maps DSE to 8183/9043,
+        # every other cluster uses the standard 9042.
+        url = urlsplit(self.gremlin_url)
+        cql_port = {8183: 9043}.get(url.port or 0, 9042)
         return (
             f"dse-jg-migrator assess "
             f"--source-gremlin-url {self.gremlin_url} "
+            f"--source-cql-host {url.hostname} --source-cql-port {cql_port} "
             f"--graph-name {self.graph_name}"
         )
 ```
+
+> **Implementation finding (#6):** the original hint omitted `--source-cql-host`, which `assess` requires, so the
+> printed command failed when copied. The hint must be a complete, runnable command; a unit test parses it with the
+> `assess` command itself.
 
 #### Step 9.2 — Write the four template files
 
