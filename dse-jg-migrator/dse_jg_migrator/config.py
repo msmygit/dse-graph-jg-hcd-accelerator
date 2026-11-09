@@ -38,7 +38,7 @@ class TargetConfig:
     cql_host: str = ""
     cql_port: int = 9042
     cql_username: str = "cassandra"
-    cql_password: str = "cassandra"  # noqa: S105
+    cql_password: str = ""
     keyspace: str = "jg_migration_test"
     local_datacenter: str = "dc1"
     opensearch_host: str = ""
@@ -52,7 +52,7 @@ class TargetConfig:
             cql_host=os.environ.get("HCD_CQL_HOST", ""),
             cql_port=int(os.environ.get("HCD_CQL_PORT", "9042")),
             cql_username=os.environ.get("HCD_CQL_USERNAME", "cassandra"),
-            cql_password=os.environ.get("HCD_CQL_PASSWORD", "cassandra"),  # noqa: S106
+            cql_password=os.environ.get("HCD_CQL_PASSWORD", ""),
             keyspace=os.environ.get("HCD_KEYSPACE", "jg_migration_test"),
             local_datacenter=os.environ.get("HCD_DATACENTER", "dc1"),
             opensearch_host=os.environ.get("OPENSEARCH_HOST", ""),
@@ -81,7 +81,7 @@ class AssessmentConfig:
     target_cql_host: str | None = None
     target_cql_port: int = 9042
     target_cql_username: str = "cassandra"
-    target_cql_password: str = "cassandra"  # noqa: S105
+    target_cql_password: str = ""
     output_dir: str = "."
     output_formats: list[str] = field(default_factory=lambda: ["all"])
     filter_category: str = "all"

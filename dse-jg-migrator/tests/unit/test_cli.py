@@ -154,6 +154,34 @@ def test_assess_filters_by_category_and_severity(runner: CliRunner, tmp_path: Pa
     assert [f["rule_id"] for f in payload["findings"]] == ["SC-001"]
 
 
+def test_assess_target_password_comes_from_hcd_cql_password(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dummy = "from-env"  # a test value, not a credential  # pragma: allowlist secret
+    monkeypatch.setenv("HCD_CQL_PASSWORD", dummy)
+    with patch("dse_jg_migrator.assessor.Assessor") as assessor_cls:
+        assessor_cls.return_value.run.return_value = _assessment("LOW")
+        res = runner.invoke(main, [*ASSESS_ARGS, "--output-dir", str(tmp_path), "--target-cql-host", "hcd"])
+    assert res.exit_code == 0, res.output
+    assert assessor_cls.call_args.kwargs["target_cql_password"] == dummy
+
+
+@pytest.mark.parametrize("command", ["assess", "run-all"])
+def test_target_host_without_password_fails_clearly(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    """No built-in password (AGENTS.md §6.2): a target host without HCD_CQL_PASSWORD stops with a hint."""
+    monkeypatch.delenv("HCD_CQL_PASSWORD", raising=False)
+    args = [command, "--source-gremlin-url", GREMLIN, "--source-cql-host", "localhost", "--graph-name", "food"]
+    if command == "run-all":
+        args += ["--target-gremlin-url", TARGET]
+    with patch("dse_jg_migrator.assessor.Assessor") as assessor_cls:
+        res = runner.invoke(main, [*args, "--output-dir", str(tmp_path), "--target-cql-host", "hcd"])
+    assert res.exit_code == 1
+    assert "HCD_CQL_PASSWORD" in " ".join(res.output.split())
+    assessor_cls.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # analyse / translate
 # ---------------------------------------------------------------------------

@@ -765,14 +765,14 @@ RULES: list[CompatibilityRule] = [
         category=Category.HCD_TARGET,
         severity=Severity.YELLOW,
         title="HCD AdvancedAuthenticator is enabled",
-        description="HCD 2.x uses AdvancedAuthenticator (password auth required). "
-        "JanusGraph must set storage.cql.username and storage.cql.password.",
+        description="The credentialed CQL connection to the HCD target succeeded and an anonymous one was rejected, "
+        "so password authentication is enforced. JanusGraph must set storage.username and storage.password.",
         detection_hint="AdvancedAuthenticator",
-        jg_equivalent=("storage.cql.username=cassandra, storage.cql.password=<password> in janusgraph.properties"),
+        jg_equivalent="storage.username=<user>, storage.password=<password> in janusgraph.properties",
         docs_link="https://docs.janusgraph.org/basics/configuration-reference/#storage-cql",
         remediation=(
-            "Set storage.cql.username and storage.cql.password in janusgraph.properties. "
-            "Anonymous connections to HCD will be rejected."
+            "Set storage.username and storage.password in janusgraph.properties, supplied at deploy time "
+            "(e.g. from $HCD_CQL_PASSWORD) — never committed."
         ),
     ),
     CompatibilityRule(
@@ -867,6 +867,22 @@ RULES: list[CompatibilityRule] = [
             "Run: docker login cp.icr.io --username cp\n"
             "When prompted for password, paste your IBM Entitled Registry key "
             "from https://myibm.ibm.com/products-services/containerlibrary"
+        ),
+    ),
+    CompatibilityRule(
+        rule_id="HC-009",
+        category=Category.HCD_TARGET,
+        severity=Severity.RED,
+        title="HCD accepts an anonymous connection",
+        description="The HCD target accepted a CQL connection without credentials, so authentication is not "
+        "enforced. The HCD image ships with authenticator.parameters.enabled commented out (off).",
+        detection_hint="",
+        jg_equivalent="",
+        docs_link="https://www.ibm.com/docs/en/hyper-converged-database",
+        remediation=(
+            "Enable authentication in cassandra.yaml: under authenticator.parameters set 'enabled: true' and "
+            "'default_scheme: internal', and under authorizer.parameters set 'enabled: true'; restart HCD. The local "
+            "stack does this with docker/hcd-entrypoint.sh. Then change the default 'cassandra' superuser password."
         ),
     ),
 ]

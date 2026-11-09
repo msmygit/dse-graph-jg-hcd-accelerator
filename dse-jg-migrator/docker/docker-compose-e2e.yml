@@ -9,6 +9,9 @@
 #   docker compose -f docker/docker-compose-e2e.yml up -d
 #   docker compose -f docker/docker-compose-e2e.yml ps       # verify all healthy
 #   docker compose -f docker/docker-compose-e2e.yml down -v  # full teardown
+#
+# HCD runs with password authentication enabled (docker/hcd-entrypoint.sh). Export the password of its built-in
+# `cassandra` superuser first — on a fresh local stack it is `cassandra`:  export HCD_CQL_PASSWORD=cassandra
 
 networks:
   migrator-net:
@@ -38,13 +41,20 @@ services:
       - CLUSTER_NAME=hcd_cluster
       - DS_LICENSE=accept
       - JVM_EXTRA_OPTS=-Dcassandra.sai.latest.version=ec
+      # A reference to the caller's environment, not a value (hence the allowlist pragma).
+      - HCD_CQL_PASSWORD=${HCD_CQL_PASSWORD:?Set HCD_CQL_PASSWORD - on a fresh local stack export HCD_CQL_PASSWORD=cassandra}  # pragma: allowlist secret
+    # The image ships with authentication disabled; this wrapper enables it, then runs the image's own entrypoint
+    # (which still auto-configures the network settings).
+    entrypoint: ["/tini", "-g", "--", "/hcd-entrypoint.sh"]
+    command: ["hcd", "cassandra", "-f"]
     volumes:
+      - ./hcd-entrypoint.sh:/hcd-entrypoint.sh:ro
       - hcd-data:/var/lib/cassandra
     ports:
       - "9042:9042"                 # CQL — JanusGraph connects here
       - "8181:8181"                 # HCD Data API
     healthcheck:
-      test: ["CMD-SHELL", "cqlsh -u cassandra -p cassandra -e 'describe keyspaces'"]
+      test: ["CMD-SHELL", "cqlsh -u cassandra -p \"$$HCD_CQL_PASSWORD\" -e 'describe keyspaces'"]
       interval: 15s
       timeout: 10s
       retries: 20
@@ -89,8 +99,8 @@ services:
       janusgraph.storage.hostname: hcd
       janusgraph.storage.port: "9042"
       janusgraph.storage.cql.local-datacenter: dc1
-      janusgraph.storage.cql.username: cassandra
-      janusgraph.storage.cql.password: ${HCD_CQL_PASSWORD:-cassandra}
+      janusgraph.storage.username: cassandra
+      janusgraph.storage.password: ${HCD_CQL_PASSWORD:?Set HCD_CQL_PASSWORD}
       janusgraph.storage.cql.keyspace: jg_migration_test
       janusgraph.storage.cql.replication-strategy-class: NetworkTopologyStrategy
       janusgraph.storage.cql.replication-strategy-options: dc1,1

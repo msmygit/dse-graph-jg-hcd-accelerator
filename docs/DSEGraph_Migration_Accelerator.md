@@ -340,11 +340,11 @@ The catalogue must contain (at minimum) the following rules, derived from the co
 
 **HCD Target Compatibility Rules (HC-xxx):**
 
-These rules are evaluated by the assessor against the **target** HCD environment (not the source DSE cluster). They run as a pre-flight connectivity and compatibility check before migration starts. Source: `hcd-dev/cassandra.yaml` and `hcd-dev/compose.yaml`.
+These rules are evaluated by the assessor against the **target** HCD environment (not the source DSE cluster). They run as a pre-flight connectivity and compatibility check before migration starts. Source: the HCD 2.x image's own `cassandra.yaml` defaults and the HCD documentation (the former `hcd-dev/` reference setup was removed).
 
 | Rule ID | Severity | What is Checked | Notes |
 |---------|----------|----------------|-------|
-| `HC-001` | YELLOW | HCD `AdvancedAuthenticator` is enabled | `storage.cql.username` and `storage.cql.password` **must** be set in JanusGraph properties; anonymous connections rejected |
+| `HC-001` | YELLOW | HCD enforces authentication (a credentialed connection succeeds **and** an anonymous one is rejected) | `storage.username` and `storage.password` **must** be set in JanusGraph properties |
 | `HC-002` | YELLOW | HCD `materialized_views_enabled: false` | JanusGraph does not use CQL MVs — no conflict, but any pre-existing CQL MV creation scripts must be removed |
 | `HC-003` | YELLOW | HCD `hcd_guardrail_defaults: true` enforces batch-size limits | `storage.cql.atomic-batch-mutate=false` must be set; do not enable atomic batch mutations |
 | `HC-004` | YELLOW | HCD `storage_compatibility_mode: NONE` (Cassandra 5+ SSTable formats) | JanusGraph 1.x CQL driver (DataStax Java Driver 4.x) fully supports Cassandra 5 protocol — no action needed; flag as informational |
@@ -352,6 +352,9 @@ These rules are evaluated by the assessor against the **target** HCD environment
 | `HC-006` | GREEN | HCD CQL port `9042`, datacenter `dc1` | Matches JanusGraph defaults (`storage.port=9042`, `storage.cql.local-datacenter=dc1`) — fully compatible |
 | `HC-007` | YELLOW | HCD `platform: linux/amd64` — Apple Silicon emulation | If the migration tool runs on Apple Silicon (M-series), Docker emulation is used for HCD. Flag for operators; no JanusGraph config impact |
 | `HC-008` | RED | IBM Container Registry authentication required | `docker login cp.icr.io --username cp` must succeed before `docker compose up`. Assessor detects if HCD is reachable on target host; if not, emits this RED finding with login instructions |
+| `HC-009` | RED | HCD accepts an **anonymous** connection — authentication is not enforced | Enable `AdvancedAuthenticator` (`authenticator.parameters.enabled: true`); a target that accepts anyone must not receive migrated data |
+
+HC-001 used to be emitted for any successful credentialed connection, which also succeeds when HCD does not check passwords — so it claimed authentication was active on an open target (found live). The assessor now also attempts one **anonymous** connection (read-only: connect only, no queries): rejected → `HC-001`; accepted → `HC-009` (RED); inconclusive (e.g. timeout) → `HC-001` worded as unverified, never a false claim.
 
 The assessor probes `HC-008` by attempting a `cqlsh` connection to the configured HCD host/port with the provided credentials. If the connection fails and the target host is a local Docker network address (e.g., `127.0.0.1` or a `docker-compose` service name), it emits `HC-008` with the ICR login instructions.
 
@@ -503,7 +506,7 @@ class Assessor:
            findings.append(self._make_finding(
                "HC-001",
                "HCD AdvancedAuthenticator confirmed active — credentials accepted. "
-               "Ensure JanusGraph config sets storage.cql.username and storage.cql.password."
+               "Ensure JanusGraph config sets storage.username and storage.password."
            ))
 
            # HC-002: materialized_views_enabled
@@ -1533,7 +1536,7 @@ Apply the translated JanusGraph JSON schema to the target JanusGraph + HCD clust
    | Cluster name | `hcd_cluster` | n/a (informational) |
    | CQL port | `9042` | `storage.port=9042` |
    | Local datacenter | `dc1` | `storage.cql.local-datacenter=dc1` |
-   | Authenticator | `AdvancedAuthenticator` (password enabled) | `storage.cql.username=cassandra` / `storage.cql.password=cassandra` |
+   | Authenticator | `AdvancedAuthenticator` (password enabled) | `storage.username=cassandra` / `storage.password=cassandra` |
    | Default secondary index | `sai` (Storage-Attached Index) | no conflict — JanusGraph manages its own index tables |
    | Materialized views | **disabled** (`materialized_views_enabled: false`) | no conflict — JanusGraph does not use CQL MVs |
    | `storage_compatibility_mode` | `NONE` (Cassandra 5+ formats) | requires JanusGraph CQL driver ≥ 4.x (satisfied by JanusGraph 1.x) |
@@ -1548,8 +1551,8 @@ Apply the translated JanusGraph JSON schema to the target JanusGraph + HCD clust
    storage.port=9042
    storage.cql.keyspace=<target-keyspace>
    storage.cql.local-datacenter=dc1     # HCD default DC name from cassandra.yaml
-   storage.cql.username=cassandra       # HCD AdvancedAuthenticator default role
-   storage.cql.password=cassandra       # Change in production
+   storage.username=cassandra       # HCD AdvancedAuthenticator default role
+   storage.password=cassandra       # Change in production
    storage.cql.replication-strategy-class=NetworkTopologyStrategy
    storage.cql.replication-strategy-options=dc1,1   # single-node dev; use dc1,3 in production
 
@@ -2007,7 +2010,7 @@ docker login cp.icr.io --username cp
 # Expected: "Login Succeeded"
 ```
 
-**System requirements** (from `hcd-dev/README.md`):
+**System requirements** (from the HCD documentation):
 - Docker memory allocation: **≥ 8 GB** total (HCD 3 GB + DSE 2 GB + JanusGraph 1.5 GB + OpenSearch 1.5 GB)
 - Disk space: **≥ 15 GB** free
 - Platform: HCD image is `linux/amd64` — on Apple Silicon, Docker uses Rosetta/emulation (slower, but functional)
@@ -2015,7 +2018,7 @@ docker login cp.icr.io --username cp
 
 ### Todo List
 
-1. **Create `docker/docker-compose-e2e.yml`** — the canonical E2E compose file built from `hcd-dev/compose.yaml` and `janusgraph/janusgraph-dist/docker/examples/docker-compose-cql-es.yml`:
+1. **Create `docker/docker-compose-e2e.yml`** — the canonical E2E compose file built from the HCD reference compose setup and `janusgraph/janusgraph-dist/docker/examples/docker-compose-cql-es.yml`:
 
    ```yaml
    # docker/docker-compose-e2e.yml
@@ -2050,15 +2053,18 @@ docker login cp.icr.io --username cp
          - MAX_HEAP_SIZE=1536M
          - CLUSTER_NAME=hcd_cluster
          - DS_LICENSE=accept
-         - HCD_AUTO_CONF_OFF=cassandra.yaml
          - JVM_EXTRA_OPTS=-Dcassandra.sai.latest.version=ec
+         - HCD_CQL_PASSWORD=${HCD_CQL_PASSWORD:?Set HCD_CQL_PASSWORD}
+       # Authentication: docker/hcd-entrypoint.sh enables AdvancedAuthenticator, then runs the image's entrypoint
+       entrypoint: ["/tini", "-g", "--", "/hcd-entrypoint.sh"]
+       command: ["hcd", "cassandra", "-f"]
        volumes:
-         - ${PWD}/hcd-dev/cassandra.yaml:/opt/hcd/resources/cassandra/conf/cassandra.yaml:ro
+         - ./hcd-entrypoint.sh:/hcd-entrypoint.sh:ro
          - hcd-data:/var/lib/cassandra
        ports:
          - "9042:9042"                 # CQL — JanusGraph connects here
        healthcheck:
-         test: ["CMD-SHELL", "cqlsh -u cassandra -p cassandra -e 'describe keyspaces'"]
+         test: ["CMD-SHELL", "cqlsh -u cassandra -p \"$$HCD_CQL_PASSWORD\" -e 'describe keyspaces'"]
          interval: 15s
          timeout: 10s
          retries: 20
@@ -2101,8 +2107,8 @@ docker login cp.icr.io --username cp
          janusgraph.storage.hostname: hcd
          janusgraph.storage.port: "9042"
          janusgraph.storage.cql.local-datacenter: dc1
-         janusgraph.storage.cql.username: cassandra
-         janusgraph.storage.cql.password: cassandra
+         janusgraph.storage.username: cassandra
+         janusgraph.storage.password: cassandra
          janusgraph.storage.cql.keyspace: jg_migration_test
          janusgraph.storage.cql.replication-strategy-class: NetworkTopologyStrategy
          janusgraph.storage.cql.replication-strategy-options: dc1,1
@@ -2177,10 +2183,10 @@ docker login cp.icr.io --username cp
    storage.hostname=hcd
    storage.port=9042
    storage.cql.local-datacenter=dc1
-   storage.cql.username=cassandra
+   storage.username=cassandra
    # Never commit a real password. Supply it at deploy time (e.g. templated from $HCD_CQL_PASSWORD);
-   # the E2E compose stack passes it via env var janusgraph.storage.cql.password instead of this file.
-   storage.cql.password=<set-at-deploy-time>
+   # the E2E compose stack passes it via env var janusgraph.storage.password instead of this file.
+   storage.password=<set-at-deploy-time>
    storage.cql.keyspace=jg_migration_test
    storage.cql.replication-strategy-class=NetworkTopologyStrategy
    storage.cql.replication-strategy-options=dc1,1
@@ -2312,8 +2318,33 @@ docker login cp.icr.io --username cp
      `HCD_CQL_PASSWORD` if set (none are committed). `tests/e2e` uses the same command for its reset (one
      implementation).
 
+8. **HCD authentication, credentials and a clean slate (user-approved: entrypoint wrapper).**
+   - The `hcd-dev/cassandra.yaml` mount was removed earlier because it bound HCD to `localhost` (JanusGraph, in
+     another container, could not connect) — and authentication enforcement went with it: HCD accepted any
+     password or none (found live). `docker/hcd-entrypoint.sh` restores it without a config copy: it uncomments
+     `enabled: true` / `default_scheme: internal` in the `authenticator` block and `enabled: true` in the
+     `authorizer` block of the image's own `cassandra.yaml` (the same three settings the removed reference file had),
+     **fails the container start if those lines are not found** (so a future image layout change cannot silently
+     disable authentication), then `exec`s the image's `/entrypoint.sh`, whose network auto-configuration is kept.
+   - Credentials (AGENTS.md §6.2 — no password defaults): `HCD_CQL_PASSWORD` is required by the compose file
+     (`${HCD_CQL_PASSWORD:?…}` for JanusGraph and the HCD healthcheck), checked by the `up.sh` preflight with a
+     one-line hint, and read by `assess` / `run-all` (`--target-cql-password`, env `HCD_CQL_PASSWORD`). On a fresh
+     local stack it is HCD's built-in superuser password, `cassandra`.
+   - `./docker/up.sh --clean [--yes]` returns the stack to a clean slate: removes this stack's containers (any
+     compose project), their named **and** anonymous volumes, the compose network and `./out`; images are kept.
+   - `hcd-dev/` (a standalone HCD reference setup) is removed; references now point to `docker/`.
+   - **Discrepancy found live and fixed:** JanusGraph's backend credentials are `storage.username` /
+     `storage.password` (`janusgraph/docs/configs/janusgraph-cfg.md`). This plan, the compose file and
+     `janusgraph-hcd.properties` used `storage.cql.username` / `storage.cql.password`, which JanusGraph silently
+     ignores; it only worked because HCD did not enforce authentication. With enforcement JanusGraph failed to start
+     ("requires authentication … but no authenticator configured") until the keys were corrected.
+   - Verified live on a clean slate (2026-11-09): anonymous, wrong-password and unknown-user CQL connections are
+     rejected, the right password is accepted; JanusGraph starts authenticated; the quick start (`seed` 68 s,
+     `run-all` 25 s, 6/6 validation) and `tests/e2e` (4/4) pass; `assess` reports HC-001 (and HC-009 against the
+     previous, open HCD).
+
 ### Relevant Context
-- HCD image: `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` (from `hcd-dev/compose.yaml:3`) — the default; the E2E stack reads the tag from `HCD_IMAGE_TAG` so users can test another HCD release without editing the compose file
+- HCD image: `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` — the default; the E2E stack reads the tag from `HCD_IMAGE_TAG` so users can test another HCD release without editing the compose file
 - HCD Data API image: `cp.icr.io/cp/cpd/ibm-datastax-hcd/data-api:v1.0.53` (optional for this stack — not needed by JanusGraph)
 - HCD cassandra.yaml key settings: `cluster_name=hcd_cluster`, `authenticator=AdvancedAuthenticator` (password auth enabled), `dc1`, `materialized_views_enabled=false`, `default_secondary_index=sai`, `storage_compatibility_mode=NONE`, `hcd_guardrail_defaults=true`
 - OpenSearch image: `opensearchproject/opensearch:3` — requires `plugins.security.disabled=true` for local dev (OpenSearch 2.12+ enforces security by default)
@@ -3219,7 +3250,7 @@ handled in code and covered by a regression unit test; details in `docs/LEARNING
 
 Complete reference for all rules implemented in `compatibility_rules.py`. Each rule is uniquely identified by its `rule_id` and maps directly to a detection method in `assessor.py`.
 
-**Total: 57 rules** — QP 17, SC 8, IX 8, HC 8, CF 6, TP 5, OL 3, SE 2 (verified against `RULES` in `compatibility_rules.py`; `tests/unit/test_compatibility_rules.py` guards the catalogue).
+**Total: 58 rules** — QP 17, SC 8, IX 8, HC 9, CF 6, TP 5, OL 3, SE 2 (verified against `RULES` in `compatibility_rules.py`; `tests/unit/test_compatibility_rules.py` guards the catalogue).
 
 ### Rule ID Naming Convention
 
@@ -3319,18 +3350,19 @@ Complete reference for all rules implemented in `compatibility_rules.py`. Each r
 
 #### HCD Target Compatibility Rules
 
-These rules are evaluated against the **target** HCD 2.x cluster and are only run when `--target-cql-host` is supplied to the `assess` command. Source: `hcd-dev/compose.yaml`, `hcd-dev/cassandra.yaml`, `hcd-dev/README.md`.
+These rules are evaluated against the **target** HCD 2.x cluster and are only run when `--target-cql-host` is supplied to the `assess` command. Source: the HCD 2.x image's own `cassandra.yaml` defaults and the HCD documentation (the former `hcd-dev/` reference setup was removed).
 
 | Rule ID | Severity | Detection Hint | JanusGraph/HCD Action | Docs |
 |---------|----------|----------------|-----------------------|------|
-| `HC-001` | YELLOW | CQL connection with credentials succeeds → `AdvancedAuthenticator` active | Set `storage.cql.username=cassandra` and `storage.cql.password=cassandra` in JG properties (never leave blank) | [JanusGraph CQL Auth](https://docs.janusgraph.org/storage-backend/cassandra/#authentication) |
+| `HC-001` | YELLOW | Credentialed CQL connection succeeds **and** an anonymous one is rejected → authentication enforced | Set `storage.username` and `storage.password` in the JanusGraph properties (never leave blank) | [JanusGraph CQL Auth](https://docs.janusgraph.org/storage-backend/cassandra/#authentication) |
 | `HC-002` | YELLOW | `SELECT value FROM system_views.settings WHERE name='materialized_views_enabled'` returns `false` | JanusGraph does not create CQL MVs — no action needed; confirm no application scripts attempt `CREATE MATERIALIZED VIEW` | [HCD cassandra.yaml](../hcd-dev/cassandra.yaml) |
 | `HC-003` | YELLOW | Static advisory: `hcd_guardrail_defaults=true` in HCD cassandra.yaml | Set `storage.cql.atomic-batch-mutate=false` in JanusGraph config; keep write batches < 5 MB | [HCD cassandra.yaml](../hcd-dev/cassandra.yaml) |
 | `HC-004` | YELLOW | Static advisory: `storage_compatibility_mode=NONE` (Cassandra 5+ SSTable formats) | JanusGraph 1.x uses DataStax Java Driver 4.x which supports Cassandra 5 natively — no action needed; informational | [HCD cassandra.yaml](../hcd-dev/cassandra.yaml) |
 | `HC-005` | YELLOW | Static advisory: `default_secondary_index=sai` | JanusGraph creates its own index tables; SAI default does not interfere — informational | [HCD cassandra.yaml](../hcd-dev/cassandra.yaml) |
 | `HC-006` | GREEN | CQL port `9042` + datacenter `dc1` confirmed | Matches JanusGraph defaults; set `storage.port=9042` and `storage.cql.local-datacenter=dc1` | [JanusGraph CQL](https://docs.janusgraph.org/storage-backend/cassandra/) |
 | `HC-007` | YELLOW | `platform.machine() == "arm64"` at runtime | HCD `linux/amd64` image runs under Rosetta emulation on Apple Silicon — expect slower startup; increase `start_period` in Docker healthcheck | [hcd-dev/README.md](../hcd-dev/README.md) |
-| `HC-008` | RED | CQL connection to target host fails (any exception) | `docker login cp.icr.io --username cp` must succeed; pull HCD image `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi`; verify `docker compose ps` shows `healthy` | [hcd-dev/README.md](../hcd-dev/README.md) |
+| `HC-008` | RED | CQL connection to target host fails (any exception) | `docker login cp.icr.io --username cp` must succeed; pull HCD image `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi`; verify `docker compose ps` shows `healthy` | [docker/README.md](../dse-jg-migrator/docker/README.md) |
+| `HC-009` | RED | An anonymous CQL connection to the target succeeds | Enable HCD authentication (`AdvancedAuthenticator` with `enabled: true`) before migrating | [HCD security](https://www.ibm.com/docs/en/hyper-converged-database) |
 
 ---
 

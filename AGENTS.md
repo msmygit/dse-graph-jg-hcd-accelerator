@@ -140,6 +140,7 @@ dse-jg-migrator/
 │   ├── janusgraph-hcd.properties
 │   ├── seed_dse.groovy
 │   ├── up.sh                     # ordered, health-gated startup (Podman-safe)
+│   ├── hcd-entrypoint.sh         # enables HCD password authentication, then runs the image entrypoint
 │   └── README.md
 └── examples/
     ├── food-graph-schema.json
@@ -510,7 +511,7 @@ strategy:
 
 | Service | Image | Source |
 |---------|-------|--------|
-| HCD | `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` (default; the E2E compose file reads `${HCD_IMAGE_TAG:-2.0.8-ubi}`) | `hcd-dev/compose.yaml` |
+| HCD | `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` (default; the E2E compose file reads `${HCD_IMAGE_TAG:-2.0.8-ubi}`) | Plan §Sub-Task 8 |
 | OpenSearch | `opensearchproject/opensearch:3` | Plan §Sub-Task 8 |
 | JanusGraph | `janusgraph/janusgraph:latest` | Plan §Sub-Task 8 |
 | DSE Graph 6.8 | `datastax/dse-server:6.8.65-ubi7` | Plan §Sub-Task 8 |
@@ -521,9 +522,9 @@ Do not change image tags without updating the plan and all references in compose
 ### 9.2 No credentials in compose files
 
 `docker-compose-e2e.yml` must not contain the IBM entitlement key.
-All passwords use `${VARIABLE:-default}` substitution. The one-time
-`docker login cp.icr.io --username cp` step is documented in `docker/README.md`
-and `hcd-dev/README.md` — it is never scripted or stored in a file.
+Passwords follow §6.2: `${VARIABLE:?message}` with no default (e.g. `HCD_CQL_PASSWORD`), or no
+credential at all. The one-time `docker login cp.icr.io --username cp` step is documented in
+`docker/README.md` — it is never scripted or stored in a file.
 
 ### 9.3 Idempotency
 

@@ -112,15 +112,15 @@ def test_tp_rules_present() -> None:
 
 
 def test_hc_rules_present() -> None:
-    """HCD target rules HC-001 through HC-008 must all exist."""
-    for n in range(1, 9):
+    """HCD target rules HC-001 through HC-009 must all exist."""
+    for n in range(1, 10):
         rule_id = f"HC-{n:03d}"
         assert rule_id in RULES_BY_ID, f"Missing rule {rule_id}"
 
 
 def test_total_rule_count() -> None:
-    """Exactly 57 rules should exist (QP-017 + SC-008 + IX-008 + CF-006 + OL-003 + SE-002 + TP-005 + HC-008)."""
-    assert len(RULES) == 57, f"Expected 57 rules, got {len(RULES)}"
+    """Exactly 58 rules should exist (QP-017 + SC-008 + IX-008 + CF-006 + OL-003 + SE-002 + TP-005 + HC-009)."""
+    assert len(RULES) == 58, f"Expected 58 rules, got {len(RULES)}"
 
 
 def test_hc_006_is_green() -> None:
@@ -150,6 +150,7 @@ def test_red_rules_have_empty_jg_equivalent_or_note() -> None:
         "SE-001",
         "SE-002",
         "HC-008",
+        "HC-009",
     ]
     for rule_id in red_blockers_no_auto:
         rule = RULES_BY_ID[rule_id]
@@ -161,3 +162,10 @@ def test_cf_006_source_unreachable_is_red() -> None:
     rule = RULES_BY_ID["CF-006"]
     assert rule.severity == Severity.RED
     assert "seed" in rule.remediation and "up.sh" in rule.remediation
+
+
+def test_hc_009_open_target_is_red() -> None:
+    """HC-009 is RED: an HCD that accepts anonymous connections must stop run-all at the assessment gate."""
+    rule = RULES_BY_ID["HC-009"]
+    assert rule.severity == Severity.RED
+    assert "enabled: true" in rule.remediation and "hcd-entrypoint.sh" in rule.remediation

@@ -72,6 +72,27 @@ def _load_assessment_risk(json_path: str) -> str:
 _CONNECTION_ERROR_NAMES = {"ClientConnectionError", "WSServerHandshakeError", "NoHostAvailable", "OperationTimedOut"}
 STACK_HINT = "Is the stack running and healthy? Start it with ./docker/up.sh — it waits until every service is healthy."
 
+# HCD credentials come from the environment (or the flag) — never a built-in default (AGENTS.md §6.2).
+_target_cql_username_option = click.option(
+    "--target-cql-username", envvar="HCD_CQL_USERNAME", default="cassandra", show_default=True
+)
+_target_cql_password_option = click.option(
+    "--target-cql-password",
+    envvar="HCD_CQL_PASSWORD",
+    default=None,
+    help="Password for --target-cql-username. Defaults to $HCD_CQL_PASSWORD.",
+)
+
+
+def _require_target_password(target_cql_host: str | None, target_cql_password: str | None) -> str:
+    """Return the HCD password, or fail clearly when a target host is given without one."""
+    if target_cql_host and not target_cql_password:
+        raise UserFacingError(
+            "--target-cql-host needs a password: set HCD_CQL_PASSWORD or pass --target-cql-password "
+            "(on a fresh local stack: export HCD_CQL_PASSWORD=cassandra)."
+        )
+    return target_cql_password or ""
+
 
 def _is_connection_error(exc: BaseException) -> bool:
     """True for a refused / unreachable / timed-out connection from Python, aiohttp or cassandra-driver."""
@@ -228,13 +249,8 @@ def seed(
     help="CQL host of the target HCD cluster. When provided, runs HCD pre-flight checks.",
 )
 @click.option("--target-cql-port", default=9042, show_default=True)
-@click.option("--target-cql-username", default="cassandra", show_default=True)
-@click.option(
-    "--target-cql-password",
-    default="cassandra",
-    show_default=True,  # noqa: S106
-    hide_input=True,
-)
+@_target_cql_username_option
+@_target_cql_password_option
 @click.option(
     "--format",
     "output_formats",
@@ -282,7 +298,7 @@ def assess(
     target_cql_host: str | None,
     target_cql_port: int,
     target_cql_username: str,
-    target_cql_password: str,
+    target_cql_password: str | None,
     output_formats: tuple[str, ...],
     filter_category: str,
     filter_severity: str,
@@ -324,7 +340,7 @@ def assess(
         target_cql_host=target_cql_host,
         target_cql_port=target_cql_port,
         target_cql_username=target_cql_username,
-        target_cql_password=target_cql_password,
+        target_cql_password=_require_target_password(target_cql_host, target_cql_password),
         username=username,
         password=password,
     )
@@ -686,13 +702,8 @@ def report(graph_name: str, output_dir: str) -> None:
 @click.option("--target-gremlin-url", required=True)
 @click.option("--target-cql-host", default=None)
 @click.option("--target-cql-port", default=9042, show_default=True)
-@click.option("--target-cql-username", default="cassandra", show_default=True)
-@click.option(
-    "--target-cql-password",
-    default="cassandra",
-    show_default=True,  # noqa: S106
-    hide_input=True,
-)
+@_target_cql_username_option
+@_target_cql_password_option
 @click.option("--output-dir", default=".", show_default=True)
 @click.option("--analyze-only", is_flag=True, default=False, help="Run only assessment and analysis phases, then exit.")
 @click.option(
@@ -727,7 +738,7 @@ def run_all(  # noqa: PLR0913
     target_cql_host: str | None,
     target_cql_port: int,
     target_cql_username: str,
-    target_cql_password: str,
+    target_cql_password: str | None,
     output_dir: str,
     analyze_only: bool,
     skip_assessment_gate: bool,
@@ -748,6 +759,7 @@ def run_all(  # noqa: PLR0913
 
       dse-jg-migrator run-all --seed --template food --analyze-only ...
     """
+    target_cql_password = _require_target_password(target_cql_host, target_cql_password)  # fail before seeding
     os.makedirs(output_dir, exist_ok=True)
     analysis_path = os.path.join(output_dir, f"{graph_name}-analysis.json")
     schema_path = os.path.join(output_dir, f"{graph_name}-janusgraph-schema.json")
