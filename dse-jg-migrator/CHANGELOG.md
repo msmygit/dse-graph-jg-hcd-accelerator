@@ -23,7 +23,7 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) forma
 - **ST-9**: Seed templates (`seed_templates/food.groovy`, `social.groovy`, `iot.groovy`, `enterprise.groovy`).
 - Unit tests for all modules with ≥ 80% coverage gate.
 
-- Fix-up for plan gaps (branch `fix/plan-gaps`, PR #TBD):
+- Fix-up for plan gaps (branch `fix/plan-gaps`, PR #2):
   - `python -m dse_jg_migrator` entry point (`__main__.py`).
   - `examples/` (`food-graph-schema.json`, `janusgraph-target.json`, `food-assessment-report.{md,json}`), regenerated from the live `food` run (analyser/translator/assessor against DSE 6.9.26 and the HCD target).
   - `tests/fixtures/food_schema_all_categories.groovy` plus `test_fixtures_coverage.py` asserting QP/SC/IX/CF/OL/SE/TP/HC are all exercised.
@@ -52,6 +52,8 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) forma
 - Plan statuses: every sub-task `[x] done`, each verified live on 2026-11-09 (evidence in each status line and Appendix E.10).
 - Type mapping restricted to JanusGraph's documented property data types (enforced by `test_type_map_targets_are_documented_janusgraph_types`). `Duration`: Classic → `java.lang.Long` milliseconds, Core (DSG) → ISO-8601 `java.lang.String` (was the undocumented `java.time.Duration`). Decimal conversion moved from `_row_to_props` to the per-key `_target_value`.
 - `docker/janusgraph-hcd.properties`: the default `cassandra` password is replaced by a placeholder (AGENTS.md §6.1).
+- `docker-compose-e2e.yml`: OpenSearch (security disabled) skips the demo security config (`DISABLE_INSTALL_DEMO_CONFIG=true`), so no admin password — default or otherwise — is committed (flagged by the IBM Vault Radar pre-commit control). (#2)
+- `.pre-commit-config.yaml`: detect-secrets pinned to v1.5.0, matching the baseline and CI; v1.4.0 could not load the 1.5.0 baseline and failed every commit. (#2)
 - `docker-compose-e2e.yml`: the E2E source is DSE 6.9.26 (`-g -s`, `cpus: 8`; needs a Podman VM with ≥ 10 CPUs) — DSE 6.8's Java 8 JVM wedged at a safepoint on every boot under QEMU. 6.8 remains supported on native `amd64`.
 - Migrator reads the DSE source over GraphSON v3 (DSE GraphBinary types are undecodable by gremlin-python); the checkpoint DB defaults to `<output_dir>/<graph>-migration-checkpoint.db` (was the CWD).
 
