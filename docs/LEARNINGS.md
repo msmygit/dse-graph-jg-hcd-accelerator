@@ -182,3 +182,15 @@ them a DSE commit log it cannot replay (exit 100) — plus the network and `./ou
 compose project (the directory name), so volumes created from another checkout survive. `./docker/up.sh --clean`
 removes the stack's containers in reverse dependency order (with their anonymous volumes), every `*_hcd-data` /
 `*_opensearch-data` / `*_dse-data` volume, `*_migrator-net` and `./out`, after listing them — and keeps the images.
+
+## 12. A report is only as true as its inputs — trace every cell to a source
+
+The migration report showed "✅ OK" for every phase since ST-7: its status came from a `phase_stats` argument no
+caller ever passed, so the default (`ok=True`) was rendered as fact. Its counts table had one row per audited batch,
+but only full CQL vertex batches were audited, and the audit log was never reset — so the table repeated labels and
+missed edges, partial batches and small labels, while the validation table below it was correct. Rules that follow:
+
+- Every report cell needs a producer; a default that renders as success (`✅`, `0 failed`) must be "unknown" instead.
+- Audit at the single choke point (the batch flush), not at one of several call sites.
+- An append-only log needs a lifetime: here it lives as long as the checkpoint (fresh checkpoint → fresh log).
+- Cross-check a new report against an independent source (the validation counts) on a live run.

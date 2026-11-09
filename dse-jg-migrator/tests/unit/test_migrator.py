@@ -149,6 +149,49 @@ def test_append_audit_creates_file(tmp_path) -> None:  # type: ignore[no-untyped
     assert entry["failed"] == 1
 
 
+def test_every_edge_batch_is_audited(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Live finding: edge batches were never audited, so the report's counts table listed no edges."""
+    m = _make_migrator(tmp_path)
+    client = MagicMock(**{"submit.return_value.all.return_value.result.return_value": ["e0", "e1"]})
+    m._flush_edge_batch(client, [("knows", "1", "2", {}), ("knows", "2", "1", {})])
+    m._flush_edge_batch(client, [("knows", "1", "2", {}), ("knows", "2", "1", {})])
+    batches = [(e["kind"], e["label"], e["batch_start"], e["migrated"]) for e in _read_audit(tmp_path)]
+    assert batches == [("edge", "knows", 0, 2), ("edge", "knows", 2, 2)]
+
+
+def _run_with_one_vertex_batch(m: Migrator) -> None:
+    from unittest.mock import patch
+
+    def migrate(label, conn, client):  # type: ignore[no-untyped-def]
+        m._flush_vertex_batch(client, [(label, {"name": "a"})])
+        return 1
+
+    client = MagicMock(**{"submit.return_value.all.return_value.result.return_value": ["n0"]})
+    with (
+        patch.object(m, "_make_gremlin_client", return_value=client),
+        patch.object(m, "_migrate_vertices", side_effect=migrate),
+        patch.object(m, "_migrate_edges", return_value=0),
+    ):
+        m.run()
+
+
+def test_fresh_checkpoint_starts_a_fresh_audit_log(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Live finding: the log kept the batches of earlier migrations, so the report counted them again."""
+    (tmp_path / "food-migration-audit.jsonl").write_text('{"kind": "vertex", "label": "old", "migrated": 9}\n')
+    _run_with_one_vertex_batch(_make_migrator(tmp_path))
+    assert [e["label"] for e in _read_audit(tmp_path)] == ["person"]
+
+
+def test_resumed_checkpoint_appends_to_the_audit_log(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    m = _make_migrator(tmp_path)
+    conn = m._init_checkpoint(m.checkpoint_db)
+    m._persist_id_map_raw(conn, ["person:u0"], ["n9"])  # an earlier, interrupted run migrated one vertex
+    conn.close()
+    (tmp_path / "food-migration-audit.jsonl").write_text('{"kind": "vertex", "label": "person", "migrated": 1}\n')
+    _run_with_one_vertex_batch(m)
+    assert [e.get("migrated") for e in _read_audit(tmp_path)] == [1, 1]
+
+
 # ---------------------------------------------------------------------------
 # Appendix E.9 — id-map archive
 # ---------------------------------------------------------------------------
@@ -473,6 +516,9 @@ def test_migrate_vertices_cql_flushes_in_batches_and_maps_ids(tmp_path) -> None:
     cls.return_value.shutdown.assert_called_once()
     assert m._lookup_id(conn, "person:u0") == "n0"
     assert m._lookup_id(conn, "person:u2") == "n2"
+    # Live finding: only full batches were audited, so the last, partial batch never reached the report.
+    batches = [(e["batch_start"], e["batch_size"], e["migrated"]) for e in _read_audit(tmp_path)]
+    assert batches == [(0, 2, 2), (2, 1, 1)]
     conn.close()
 
 
@@ -757,7 +803,9 @@ def test_batch_failing_after_three_retries_is_recorded_and_audited(tmp_path) -> 
     assert delays == [1.0, 2.0, 4.0]
     assert m._failed == {("edge", "knows"): 2}
     assert "ws://localhost:8182/gremlin" in m._errors[0] and "server down" in m._errors[0]
-    assert [e["kind"] for e in _read_audit(tmp_path)] == ["BATCH_FAILED"]
+    audit = _read_audit(tmp_path)
+    assert [e["kind"] for e in audit] == ["BATCH_FAILED", "edge"]
+    assert (audit[1]["batch_size"], audit[1]["migrated"], audit[1]["failed"]) == (2, 0, 2)
 
 
 def test_run_keeps_failed_vertex_label_incomplete_and_defers_edges(tmp_path) -> None:  # type: ignore[no-untyped-def]

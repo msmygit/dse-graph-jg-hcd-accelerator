@@ -76,3 +76,59 @@ def test_corrupt_json_files_are_tolerated(tmp_path: Path) -> None:
     content = _report(tmp_path)
     assert os.path.exists(tmp_path / "food-migration-report.md")
     assert "RLAC" not in content
+
+
+def _file_report(tmp_path: Path) -> str:
+    """The report as `dse-jg-migrator report` writes it: no pipeline stats, only the files in output_dir."""
+    return Path(Reporter(graph_name="food", output_dir=str(tmp_path)).generate()).read_text(encoding="utf-8")
+
+
+def test_counts_are_one_total_per_label(tmp_path: Path) -> None:
+    """Live finding: one row per batch listed `person` four times and no partial batches, edges or small labels."""
+    audit = [
+        {"kind": "vertex", "label": "person", "batch_start": 0, "migrated": 100, "failed": 0},
+        {"kind": "vertex", "label": "person", "batch_start": 100, "migrated": 98, "failed": 2},
+        {"kind": "vertex", "label": "location", "batch_start": 0, "migrated": 30, "failed": 0},
+        {"kind": "BATCH_FAILED", "label": "person", "message": "boom"},
+        {"kind": "edge", "label": "knows", "batch_start": 0, "migrated": 434, "failed": 0},
+    ]
+    _write(tmp_path / "food-migration-audit.jsonl", "\n".join(json.dumps(e) for e in audit) + "\n")
+    content = _file_report(tmp_path)
+    counts = content.split("## Migration Counts")[1].split("##")[0]
+    rows = [ln for ln in counts.splitlines() if ln.startswith("| ") and "Kind" not in ln]
+    assert rows == ["| vertex | person | 198 | 2 |", "| vertex | location | 30 | 0 |", "| edge | knows | 434 | 0 |"]
+
+
+def test_phase_status_comes_from_the_output_files(tmp_path: Path) -> None:
+    """Live finding: every phase always read "✅ OK" (nothing passed stats), even an assessment with RED findings."""
+    findings = [{"severity": "RED"}, {"severity": "RED"}, {"severity": "YELLOW"}]
+    _write(tmp_path / "food-assessment-report.json", json.dumps({"overall_risk": "HIGH", "findings": findings}))
+    _write(tmp_path / "food-analysis.json", "{}")
+    _write(tmp_path / "food-janusgraph-schema.json", "{}")
+    _write(tmp_path / "food-migration-audit.jsonl", json.dumps({"kind": "vertex", "label": "p", "migrated": 5}) + "\n")
+    _write(tmp_path / "food-validation-report.md", "# V\n\n**Overall:** ✅ PASS\n")
+    content = _file_report(tmp_path)
+    assert "| Assessment | ⚠️ HIGH risk — 2 RED finding(s), see the assessment report |" in content
+    for phase in ("Analysis", "Translation", "Init Target", "Migration"):
+        assert f"| {phase} | ✅ OK |" in content
+    assert "| Validation | ✅ PASS |" in content
+    assert "Duration" not in content  # no timings are known when reading files
+
+
+def test_phase_status_shows_failures_and_phases_not_run(tmp_path: Path) -> None:
+    audit = [
+        {"kind": "vertex", "label": "p", "migrated": 0, "failed": 5},
+        {"kind": "BATCH_FAILED", "label": "p", "message": "boom"},
+    ]
+    _write(tmp_path / "food-migration-audit.jsonl", "\n".join(json.dumps(e) for e in audit) + "\n")
+    _write(tmp_path / "food-validation-report.md", "**Overall:** ❌ FAIL\n")
+    content = _file_report(tmp_path)
+    for phase in ("Assessment", "Analysis", "Translation", "Init Target"):
+        assert f"| {phase} | — not run |" in content
+    assert "| Migration | ❌ 1 failed batch(es) or read(s) — re-run migrate |" in content
+    assert "| Validation | ❌ FAIL |" in content
+
+
+def test_assessment_without_red_findings_shows_its_risk(tmp_path: Path) -> None:
+    _write(tmp_path / "food-assessment-report.json", json.dumps({"overall_risk": "LOW", "findings": []}))
+    assert "| Assessment | ✅ LOW risk |" in _file_report(tmp_path)
