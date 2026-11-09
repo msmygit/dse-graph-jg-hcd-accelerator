@@ -100,13 +100,7 @@ class Analyser:
             extracted_at=datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
         )
 
-        if engine == "classic":
-            result.vertex_labels, result.edge_labels, result.indexes = self._parse_classic(raw_schema)
-        else:
-            result.vertex_labels = self._parse_vertex_labels(raw_schema)
-            result.edge_labels = self._parse_edge_labels(raw_schema)
-            result.udts = self._parse_udts(raw_schema)
-            result.indexes = self._parse_indexes(raw_schema)
+        parse_schema(raw_schema, result)
         result.config = self._extract_config()
 
         if engine == "dsg" and self.cql_host:
@@ -187,10 +181,7 @@ class Analyser:
                 {"name": self.graph_name},
             )
             desc = str(parts or "")
-            if "Production" in desc:
-                config.schema_mode = "Production"
-            elif "Development" in desc:
-                config.schema_mode = "Development"
+            config.schema_mode = schema_mode_from_describe(desc) or config.schema_mode
             if "allow_scan" in desc and "true" in desc.lower():
                 config.allow_scan = True
             if "restrict_lambda" in desc and "true" in desc.lower():
@@ -288,7 +279,8 @@ class Analyser:
                     el.properties += [prop(n) for n in _quoted("properties", rest) if n not in known]
         return list(vertex_labels.values()), list(edge_labels.values()), indexes
 
-    def _parse_vertex_labels(self, schema: str) -> list[VertexLabelDefinition]:
+    @staticmethod
+    def _parse_vertex_labels(schema: str) -> list[VertexLabelDefinition]:
         """Parse schema.vertexLabel() blocks from the DSL string.
 
         Only includes primary label definition blocks (those containing
@@ -312,13 +304,14 @@ class Analyser:
                 continue
             seen.add(label_name)
             vl = VertexLabelDefinition(label=label_name)
-            vl.partition_keys = self._parse_partition_keys(block)
-            vl.clustering_keys = self._parse_clustering_keys(block)
-            vl.properties = self._parse_properties(block)
+            vl.partition_keys = Analyser._parse_partition_keys(block)
+            vl.clustering_keys = Analyser._parse_clustering_keys(block)
+            vl.properties = Analyser._parse_properties(block)
             labels.append(vl)
         return labels
 
-    def _parse_edge_labels(self, schema: str) -> list[EdgeLabelDefinition]:
+    @staticmethod
+    def _parse_edge_labels(schema: str) -> list[EdgeLabelDefinition]:
         """Parse schema.edgeLabel() blocks from the DSL string."""
         labels: list[EdgeLabelDefinition] = []
         seen: set[str] = set()
@@ -343,11 +336,12 @@ class Analyser:
                 el.from_label = from_m.group(1)
             if to_m:
                 el.to_label = to_m.group(1)
-            el.properties = self._parse_properties(block)
+            el.properties = Analyser._parse_properties(block)
             labels.append(el)
         return labels
 
-    def _parse_udts(self, schema: str) -> list[UDTDefinition]:
+    @staticmethod
+    def _parse_udts(schema: str) -> list[UDTDefinition]:
         """Parse schema.type() UDT blocks from the DSL string."""
         udts: list[UDTDefinition] = []
         for block in _STATEMENT_SPLIT.split(schema):
@@ -364,7 +358,8 @@ class Analyser:
             udts.append(udt)
         return udts
 
-    def _parse_indexes(self, schema: str) -> list[IndexDefinition]:
+    @staticmethod
+    def _parse_indexes(schema: str) -> list[IndexDefinition]:
         """Parse all index blocks from the DSL string."""
         indexes: list[IndexDefinition] = []
 
@@ -424,13 +419,15 @@ class Analyser:
 
         return indexes
 
-    def _parse_partition_keys(self, block: str) -> list[PartitionKey]:
+    @staticmethod
+    def _parse_partition_keys(block: str) -> list[PartitionKey]:
         return [
             PartitionKey(name=m.group(1), type=m.group(2))
             for m in re.finditer(r"\.partitionBy\('([^']+)',\s*(\w+)\)", block)
         ]
 
-    def _parse_clustering_keys(self, block: str) -> list[ClusteringKey]:
+    @staticmethod
+    def _parse_clustering_keys(block: str) -> list[ClusteringKey]:
         return [
             ClusteringKey(
                 name=m.group(1),
@@ -440,7 +437,8 @@ class Analyser:
             for m in re.finditer(r"\.clusterBy\('([^']+)',\s*(\w+)(?:,\s*(Asc|Desc))?\)", block)
         ]
 
-    def _parse_properties(self, block: str) -> list[PropertyDefinition]:
+    @staticmethod
+    def _parse_properties(block: str) -> list[PropertyDefinition]:
         props: list[PropertyDefinition] = []
         for m in _PROPERTY_RE.finditer(block):
             name = m.group(1)
@@ -561,3 +559,27 @@ class Analyser:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(result.to_dict(), fh, indent=2)
         return path
+
+
+def parse_schema(raw_schema: str, result: AnalysisResult) -> AnalysisResult:
+    """Fill ``result``'s labels, UDTs and indexes from ``schema.describe()`` text, using ``result.engine``'s grammar.
+
+    Pure parsing — no I/O — so the read-only assessor parses the same schema the same way as ``analyse``.
+    """
+    if result.engine == "classic":
+        result.vertex_labels, result.edge_labels, result.indexes = Analyser._parse_classic(raw_schema)
+    else:
+        result.vertex_labels = Analyser._parse_vertex_labels(raw_schema)
+        result.edge_labels = Analyser._parse_edge_labels(raw_schema)
+        result.udts = Analyser._parse_udts(raw_schema)
+        result.indexes = Analyser._parse_indexes(raw_schema)
+    return result
+
+
+def schema_mode_from_describe(desc: str) -> str:
+    """The schema mode named in ``system.graph(name).describe()`` output: "Production", "Development" or ""."""
+    if "Production" in desc:
+        return "Production"
+    if "Development" in desc:
+        return "Development"
+    return ""

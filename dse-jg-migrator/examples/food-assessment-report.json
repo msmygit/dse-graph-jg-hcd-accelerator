@@ -1,8 +1,8 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "graph_name": "food",
   "engine": "dsg",
-  "assessed_at": "2026-11-09T19:40:58.899605Z",
+  "assessed_at": "2026-11-09T23:02:21.258488Z",
   "overall_risk": "HIGH",
   "summary": {
     "total_findings": 23,
@@ -20,12 +20,88 @@
     }
   },
   "cluster_overview": {
-    "vertex_label_count": 6,
-    "edge_label_count": 4,
+    "vertex_label_count": 3,
+    "edge_label_count": 3,
+    "property_key_count": 10,
     "index_count": 4,
-    "schema_mode": "Unknown",
+    "indexes_by_kind": {
+      "searchIndex": 2,
+      "materializedView": 2
+    },
+    "mixed_index_count": 3,
+    "schema_mode": "unknown",
     "olap_enabled": false
   },
+  "index_analysis": [
+    {
+      "dse_index": "location_search",
+      "dse_kind": "searchIndex",
+      "label": "location",
+      "keys": [
+        "location_id",
+        "geo_point"
+      ],
+      "jg_index": "location_search",
+      "jg_kind": "mixed",
+      "backend": "OpenSearch / Elasticsearch",
+      "queries": "location_id: `eq`, `neq`; geo_point: `Geo.inside()` \u2192 `geoWithin(Geoshape.circle(lat, lon, radius))`",
+      "needs_search_backend": true
+    },
+    {
+      "dse_index": "person_by_name",
+      "dse_kind": "materializedView",
+      "label": "person",
+      "keys": [
+        "name"
+      ],
+      "jg_index": "person_by_name",
+      "jg_kind": "composite",
+      "backend": "HCD (storage backend)",
+      "queries": "equality on name (`has(key, value)`); no ranges or text search",
+      "needs_search_backend": false
+    },
+    {
+      "dse_index": "recipe_search",
+      "dse_kind": "searchIndex",
+      "label": "recipe",
+      "keys": [
+        "recipe_id",
+        "cuisine",
+        "instructions"
+      ],
+      "jg_index": "recipe_search",
+      "jg_kind": "mixed",
+      "backend": "OpenSearch / Elasticsearch",
+      "queries": "recipe_id: `eq`, `neq`; cuisine: `Search.prefix/regex/fuzzy()` \u2192 `textPrefix`, `textRegex`, `textFuzzy`; `eq`, `neq`; instructions: `Search.token*()` \u2192 `textContains`, `textContainsPrefix`, `textContainsRegex`, `textContainsFuzzy`",
+      "needs_search_backend": true
+    },
+    {
+      "dse_index": "knows_by_since",
+      "dse_kind": "materializedView",
+      "label": "knows",
+      "keys": [
+        "since"
+      ],
+      "jg_index": "knows_by_since",
+      "jg_kind": "composite",
+      "backend": "HCD (storage backend)",
+      "queries": "equality on since (`has(key, value)`); no ranges or text search",
+      "needs_search_backend": false
+    },
+    {
+      "dse_index": "\u2014",
+      "dse_kind": "Point property",
+      "label": "location",
+      "keys": [
+        "geo_point"
+      ],
+      "jg_index": "location_geo_geo_point",
+      "jg_kind": "mixed",
+      "backend": "OpenSearch / Elasticsearch",
+      "queries": "DSE `Geo.inside()` \u2192 `geoWithin(Geoshape.circle(lat, lon, radius))`",
+      "needs_search_backend": true
+    }
+  ],
   "findings": [
     {
       "rule_id": "SC-001",
@@ -114,8 +190,8 @@
       "severity": "RED",
       "title": "Search.prefix() / Search.token() usage",
       "detail": "searchIndex with asText/asString detected \u2014 application code likely uses Search.token() or Search.prefix(). Review and update to Text.*.",
-      "remediation": "Replace Search.prefix() with Text.textContainsPrefix(). Replace Search.token() with Text.textContains(). Ensure a mixed index with Mapping.TEXT exists on the property.",
-      "docs_link": "https://docs.janusgraph.org/index-management/index-parameters/"
+      "remediation": "Replace Search.prefix() on an asString() key with Text.textPrefix() (Mapping.STRING). Replace Search.token() with Text.textContains() and Search.tokenPrefix() with Text.textContainsPrefix() (Mapping.TEXT). The assessment's Index Analysis lists the predicates each indexed key serves.",
+      "docs_link": "https://docs.janusgraph.org/index-backend/text-search/"
     },
     {
       "rule_id": "QP-010",

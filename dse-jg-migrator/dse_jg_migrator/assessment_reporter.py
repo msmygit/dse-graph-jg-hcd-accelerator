@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
+import html as html_lib
 import json
 import os
 from datetime import UTC, datetime
 
-from dse_jg_migrator.models import AssessmentFinding, AssessmentResult
+from dse_jg_migrator.models import AssessmentFinding, AssessmentResult, IndexMapping
 
 _SEVERITY_ICON = {"RED": "🔴", "YELLOW": "🟡", "GREEN": "✅"}
 _RISK_ICON = {"CRITICAL": "🚨", "HIGH": "🔴", "MEDIUM": "🟡", "LOW": "✅"}
@@ -65,15 +67,26 @@ class AssessmentReporter:
             f"| Blockers (RED) | {reds} |",
             f"| Warnings (YELLOW) | {yellows} |",
             f"| Compatible (GREEN) | {greens} |",
+            f"| Search backend (OpenSearch / Elasticsearch) | {self._search_backend_summary()} |",
             "",
             "### Key Findings",
         ]
         if reds:
             lines.append(f"- 🔴 **{reds} Blocker(s)** require resolution before migration can proceed.")
+        mixed = self._mixed_indexes()
+        if mixed:
+            names = ", ".join(f"`{m.jg_index}`" for m in mixed)
+            lines.append(
+                f"- 🔎 **OpenSearch / Elasticsearch is required** for {len(mixed)} mixed index(es): {names} "
+                "(see Index Analysis)."
+            )
         if any(f.category == "olap" for f in r.findings if f.severity == "YELLOW"):
             lines.append("- ⚠️  OLAP usage detected — requires separate HadoopGraph/Spark setup.")
         if greens and not reds and not yellows:
             lines.append("- ✅  All checks passed — schema is fully compatible.")
+
+        lines += self._overview_markdown()
+        lines += self._index_analysis_markdown()
 
         # Group findings by category
         lines += ["", "---", "", "## Findings by Category", ""]
@@ -118,6 +131,65 @@ class AssessmentReporter:
             fh.write(content)
         return path
 
+    def _mixed_indexes(self) -> list[IndexMapping]:
+        return [m for m in self.result.index_analysis if m.needs_search_backend]
+
+    def _search_backend_summary(self) -> str:
+        """One line on whether the schema needs OpenSearch / Elasticsearch next to HCD."""
+        mixed = self._mixed_indexes()
+        if mixed:
+            return f"Required — {len(mixed)} mixed index(es)"
+        if self.result.index_analysis:
+            return "Not required by this schema's indexes"
+        return "Unknown — no indexes were read"
+
+    def _overview_markdown(self) -> list[str]:
+        """The Cluster Overview section (plan Step 0.3 §1), from ``cluster_overview``."""
+        o = self.result.cluster_overview
+        if not o:
+            return []
+        kinds = o.get("indexes_by_kind", {})
+        by_kind = ", ".join(f"{n} {k}" for k, n in sorted(kinds.items()))
+        rows = [
+            ("Graph Name", self.result.graph_name),
+            ("Engine", "Classic" if self.result.engine == "classic" else "DSG (Core)"),
+            ("Vertex Labels", o.get("vertex_label_count", 0)),
+            ("Edge Labels", o.get("edge_label_count", 0)),
+            ("Property Keys", o.get("property_key_count", 0)),
+            ("Indexes", f"{o.get('index_count', 0)}" + (f" ({by_kind})" if by_kind else "")),
+            ("Schema Mode", o.get("schema_mode", "unknown")),
+            ("OLAP Enabled", "yes" if o.get("olap_enabled") else "no"),
+        ]
+        lines = ["", "---", "", "## Cluster Overview", "", "| Property | Value |", "|----------|-------|"]
+        lines += [f"| {name} | {value} |" for name, value in rows]
+        return lines
+
+    def _index_analysis_markdown(self) -> list[str]:
+        """The Index Analysis section (plan Step 0.3 §4): each DSE index, its JanusGraph index and where it lives."""
+        rows = self.result.index_analysis
+        if not rows:
+            return []
+        lines = [
+            "",
+            "---",
+            "",
+            "## Index Analysis",
+            "",
+            "Mixed indexes live in the search backend (OpenSearch / Elasticsearch); composite and vertex-centric "
+            "indexes live in HCD. `translate` and `init-target` create these indexes automatically; the Queries "
+            "column lists the DSE predicates each one serves and their JanusGraph replacements.",
+            "",
+            "| DSE Index | DSE Kind | Label | Keys | JanusGraph Index | Backend | Queries |",
+            "|-----------|----------|-------|------|------------------|---------|---------|",
+        ]
+        for m in rows:
+            icon = "🔎 " if m.needs_search_backend else ""
+            lines.append(
+                f"| {m.dse_index} | {m.dse_kind} | {m.label} | {', '.join(m.keys)} | {m.jg_index} ({m.jg_kind}) "
+                f"| {icon}{m.backend} | {m.queries} |"
+            )
+        return lines
+
     # ──────────────────────────────────────────────────────────────────────────
     # JSON
     # ──────────────────────────────────────────────────────────────────────────
@@ -125,13 +197,16 @@ class AssessmentReporter:
     def _write_json(self) -> str:
         r = self.result
         payload = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "graph_name": r.graph_name,
             "engine": r.engine,
             "assessed_at": r.assessed_at,
             "overall_risk": r.overall_risk,
             "summary": r.summary,
             "cluster_overview": r.cluster_overview,
+            "index_analysis": [
+                {**dataclasses.asdict(m), "needs_search_backend": m.needs_search_backend} for m in r.index_analysis
+            ],
             "findings": [
                 {
                     "rule_id": f.rule_id,
@@ -209,7 +284,9 @@ td {{ padding: 0.35rem 0.6rem; border: 1px solid #e5e7eb; vertical-align: top; }
 <tr><td>Blockers (RED)</td><td>{reds}</td></tr>
 <tr><td>Warnings (YELLOW)</td><td>{yellows}</td></tr>
 <tr><td>Compatible (GREEN)</td><td>{greens}</td></tr>
+<tr><td>Search backend (OpenSearch / Elasticsearch)</td><td>{html_lib.escape(self._search_backend_summary())}</td></tr>
 </table>
+{self._index_analysis_html()}
 
 <h2>All Findings</h2>
 <table>
@@ -227,3 +304,30 @@ td {{ padding: 0.35rem 0.6rem; border: 1px solid #e5e7eb; vertical-align: top; }
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(html)
         return path
+
+    def _index_analysis_html(self) -> str:
+        """The Index Analysis table for the HTML report (empty when no indexes were read)."""
+        if not self.result.index_analysis:
+            return ""
+        cells = "".join(
+            "<tr>"
+            + "".join(
+                f"<td>{html_lib.escape(v)}</td>"
+                for v in (
+                    m.dse_index,
+                    m.dse_kind,
+                    m.label,
+                    ", ".join(m.keys),
+                    f"{m.jg_index} ({m.jg_kind})",
+                    m.backend,
+                    m.queries,
+                )
+            )
+            + "</tr>\n"
+            for m in self.result.index_analysis
+        )
+        head = "".join(
+            f"<th>{h}</th>"
+            for h in ("DSE Index", "DSE Kind", "Label", "Keys", "JanusGraph Index", "Backend", "Queries")
+        )
+        return f"\n<h2>Index Analysis</h2>\n<table>\n<tr>{head}</tr>\n{cells}</table>\n"

@@ -193,6 +193,25 @@ class AssessmentFinding:
 
 
 @dataclass
+class IndexMapping:
+    """One row of the assessment's Index Analysis: what a DSE index becomes on JanusGraph and what it needs."""
+
+    dse_index: str  # DSE index name; "—" for an index the translator adds itself (geo index of a Point property)
+    dse_kind: str  # materializedView | searchIndex | secondaryIndex | vertexCentric | Point property
+    label: str
+    keys: list[str]
+    jg_index: str  # JanusGraph index name; "—" when no index is needed
+    jg_kind: str  # composite | mixed | vertex-centric | none
+    backend: str  # where JanusGraph keeps the index: the search backend (mixed) or the storage backend
+    queries: str  # the DSE queries it serves and their JanusGraph predicates
+
+    @property
+    def needs_search_backend(self) -> bool:
+        """Mixed indexes live in OpenSearch / Elasticsearch; every other kind lives in HCD."""
+        return self.jg_kind == "mixed"
+
+
+@dataclass
 class AssessmentResult:
     """Full result of a pre-migration compatibility assessment."""
 
@@ -203,6 +222,7 @@ class AssessmentResult:
     overall_risk: str = "LOW"  # LOW | MEDIUM | HIGH | CRITICAL (computed)
     summary: dict[str, Any] = field(default_factory=dict)
     cluster_overview: dict[str, Any] = field(default_factory=dict)
+    index_analysis: list[IndexMapping] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

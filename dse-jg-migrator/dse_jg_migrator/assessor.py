@@ -6,13 +6,28 @@
 
 from __future__ import annotations
 
+import logging
 import platform
 from datetime import UTC, datetime
 from typing import Any
 
+from dse_jg_migrator.analyser import parse_schema, schema_mode_from_describe
 from dse_jg_migrator.compatibility_rules import RULES_BY_ID, Category, Severity
 from dse_jg_migrator.gremlin_io import quiet_gremlin_errors
-from dse_jg_migrator.models import AssessmentFinding, AssessmentResult
+from dse_jg_migrator.models import (
+    AnalysisResult,
+    AssessmentFinding,
+    AssessmentResult,
+    IndexDefinition,
+    IndexMapping,
+)
+from dse_jg_migrator.translator import Translator
+
+logger = logging.getLogger(__name__)
+
+SEARCH_BACKEND = "OpenSearch / Elasticsearch"
+STORAGE_BACKEND = "HCD (storage backend)"
+_GEO_TYPES = ("Point", "Linestring", "Polygon")
 
 
 class Assessor:
@@ -59,6 +74,7 @@ class Assessor:
         self._raw_schema: str = ""
         self._source_error: str = ""  # why the source schema could not be read (reported as CF-006)
         self._engine: str = "dsg"
+        self._graph_describe: str = ""  # system.graph(name).describe(), read by _assess_configuration
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public API
@@ -90,9 +106,11 @@ class Assessor:
         if self.target_cql_host:
             result.findings += self._assess_hcd_target()
 
+        analysis = self._parse_source_schema()
+        result.index_analysis = self._index_analysis(analysis)
         result.overall_risk = self._compute_risk(result.findings)
         result.summary = self._build_summary(result.findings)
-        result.cluster_overview = self._build_cluster_overview()
+        result.cluster_overview = self._build_cluster_overview(analysis, result)
         return result
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -165,18 +183,136 @@ class Assessor:
         )
         return [self._make_finding("CF-006", detail)]
 
-    def _build_cluster_overview(self) -> dict[str, Any]:
-        """Build a summary dict of cluster statistics from the raw schema."""
-        schema = self._raw_schema
+    def _build_cluster_overview(self, analysis: AnalysisResult, result: AssessmentResult) -> dict[str, Any]:
+        """Summarise the source graph from the parsed schema and the probes already run.
+
+        Reads from: nothing new — the parsed ``schema.describe()``, the graph's ``describe()`` (schema mode) and the
+        OLAP probe (OL-001 finding).
+        """
+        index_kinds: dict[str, int] = {}
+        for idx in analysis.indexes:
+            index_kinds[idx.kind] = index_kinds.get(idx.kind, 0) + 1
+        property_keys = {p.name for vl in analysis.vertex_labels for p in vl.properties}
+        property_keys |= {p.name for el in analysis.edge_labels for p in el.properties}
         return {
-            "vertex_label_count": schema.count("schema.vertexLabel("),
-            "edge_label_count": schema.count("schema.edgeLabel("),
-            "index_count": (
-                schema.count("materializedView(") + schema.count("searchIndex(") + schema.count("secondaryIndex(")
-            ),
-            "schema_mode": "Development" if "schema_mode.*Development" in schema else "Unknown",
-            "olap_enabled": False,
+            "vertex_label_count": len(analysis.vertex_labels),
+            "edge_label_count": len(analysis.edge_labels),
+            "property_key_count": len(property_keys),
+            "index_count": len(analysis.indexes),
+            "indexes_by_kind": index_kinds,
+            "mixed_index_count": sum(1 for m in result.index_analysis if m.needs_search_backend),
+            "schema_mode": schema_mode_from_describe(self._graph_describe) or "unknown",
+            "olap_enabled": any(f.rule_id == "OL-001" for f in result.findings),
         }
+
+    def _parse_source_schema(self) -> AnalysisResult:
+        """Parse the fetched ``schema.describe()`` text the way ``analyse`` does. Reads from: nothing new (pure)."""
+        analysis = AnalysisResult(graph_name=self.graph_name, engine=self._engine, extracted_at="")
+        try:
+            return parse_schema(self._raw_schema, analysis)
+        except Exception as exc:  # noqa: BLE001  # an unparsable schema must not abort the assessment (AGENTS.md §4.6)
+            logger.warning("Could not parse the schema of graph '%s' for the index analysis: %s", self.graph_name, exc)
+            return analysis
+
+    def _index_analysis(self, analysis: AnalysisResult) -> list[IndexMapping]:
+        """Map every DSE index to the JanusGraph index ``translate`` will create, and say where that index lives.
+
+        Reads from: nothing new — the parsed schema; the mapping is ``Translator.translate()`` (pure, writes nothing),
+        so the table always matches what ``translate`` / ``init-target`` create. Mixed indexes need the search backend
+        (OpenSearch / Elasticsearch); composite and vertex-centric indexes live in HCD.
+        """
+        translation = Translator(analysis).translate()
+        composite = {i.name for i in translation.compositeIndexes}
+        mixed = {i.name for i in translation.mixedIndexes}
+        vertex_centric = {i.name for i in translation.vertexCentricEdgeIndexes}
+        types = self._property_types(analysis)
+
+        rows: list[IndexMapping] = []
+        for idx in analysis.indexes:
+            keys = [k.name for k in idx.keys]
+            if idx.name in mixed:
+                jg_kind, backend, queries = "mixed", SEARCH_BACKEND, self._search_queries(idx, types)
+            elif idx.name in composite:
+                jg_kind, backend = "composite", STORAGE_BACKEND
+                queries = f"equality on {' + '.join(keys) or 'its keys'} (`has(key, value)`); no ranges or text search"
+            elif idx.name in vertex_centric:
+                jg_kind, backend = "vertex-centric", STORAGE_BACKEND
+                queries = f"a vertex's `{idx.label}` edges filtered or ordered by {', '.join(keys) or 'their keys'}"
+            else:
+                jg_kind, backend = "none", "—"
+                queries = "endpoint lookups use JanusGraph adjacency lists — no index needed"
+            rows.append(
+                IndexMapping(
+                    dse_index=idx.name,
+                    dse_kind=idx.kind,
+                    label=idx.label,
+                    keys=keys,
+                    jg_index=idx.name if jg_kind != "none" else "—",
+                    jg_kind=jg_kind,
+                    backend=backend,
+                    queries=queries,
+                )
+            )
+        # Indexes the translator adds without a DSE counterpart: the geo index of every Point property.
+        for extra in translation.mixedIndexes:
+            if extra.name in {idx.name for idx in analysis.indexes}:
+                continue
+            keys = [k.propertyKey for k in extra.keys]
+            rows.append(
+                IndexMapping(
+                    dse_index="—",
+                    dse_kind="Point property",
+                    label=extra.indexOnly,
+                    keys=keys,
+                    jg_index=extra.name,
+                    jg_kind="mixed",
+                    backend=SEARCH_BACKEND,
+                    queries="DSE `Geo.inside()` → `geoWithin(Geoshape.circle(lat, lon, radius))`",
+                )
+            )
+        return rows
+
+    @staticmethod
+    def _property_types(analysis: AnalysisResult) -> dict[tuple[str, str], str]:
+        """DSE type of every vertex key by ``(label, name)`` — properties, partition and clustering keys."""
+        types: dict[tuple[str, str], str] = {}
+        for vl in analysis.vertex_labels:
+            columns = [(k.name, k.type) for k in vl.partition_keys] + [(k.name, k.type) for k in vl.clustering_keys]
+            for name, dse_type in columns + [(p.name, p.type) for p in vl.properties]:
+                types[(vl.label, name)] = dse_type
+        return types
+
+    @staticmethod
+    def _search_queries(idx: IndexDefinition, types: dict[tuple[str, str], str]) -> str:
+        """The DSE search predicates each key of a search index serves, and their JanusGraph replacements.
+
+        DSE: ``asText()`` is tokenized (``token*``), ``asString()`` matches the whole value (``prefix``, ``regex``,
+        ``fuzzy``), and a Text key with neither is indexed both ways (dse-docs-new GraphWH-searchIndex.adoc).
+        JanusGraph: ``Mapping.TEXT`` serves ``textContains*``, ``Mapping.STRING`` serves ``textPrefix`` /
+        ``textRegex`` / ``textFuzzy``, strings default to TEXT (janusgraph/docs/index-backend/text-search.md).
+        """
+        parts: list[str] = []
+        for key in idx.keys:
+            dse_type = types.get((idx.label, key.name), "")
+            if key.as_mapping == "asText":
+                served = (
+                    "`Search.token*()` → `textContains`, `textContainsPrefix`, `textContainsRegex`, `textContainsFuzzy`"
+                )
+            elif key.as_mapping == "asString":
+                served = "`Search.prefix/regex/fuzzy()` → `textPrefix`, `textRegex`, `textFuzzy`; `eq`, `neq`"
+            elif dse_type in _GEO_TYPES:
+                served = "`Geo.inside()` → `geoWithin(Geoshape.circle(lat, lon, radius))`"
+            elif dse_type in ("Text", "Varchar", "Ascii"):
+                served = (
+                    "DSE indexes it as text and string; JanusGraph's default TEXT mapping serves only "
+                    "`textContains*` — set `Mapping.TEXTSTRING` to keep `Search.prefix/regex()`"
+                )
+            elif dse_type in ("Uuid", "Timeuuid", "Boolean"):
+                served = "`eq`, `neq`"
+            else:
+                served = "range and inequality: `gt`, `gte`, `lt`, `lte`, `neq`, `between`"
+            parts.append(f"{key.name}: {served}")
+        return "; ".join(parts)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Assessment dimensions
@@ -271,6 +407,7 @@ class Assessor:
             desc = str(parts or "")
         except Exception:  # noqa: BLE001, S110
             desc = ""
+        self._graph_describe = desc
 
         schema = self._raw_schema + desc
 

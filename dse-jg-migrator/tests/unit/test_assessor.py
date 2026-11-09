@@ -484,3 +484,91 @@ def test_olap_probe_does_not_log_the_expected_server_error() -> None:
         assessor._assess_olap()
     assert states == [True]
     assert logging.getLogger("gremlinpython").disabled is False
+
+
+# ---------------------------------------------------------------------------
+# Index Analysis and Cluster Overview (plan Step 0.3 §1 and §4)
+# ---------------------------------------------------------------------------
+
+_FIXTURES = __import__("pathlib").Path(__file__).parent.parent / "fixtures"
+
+
+def _index_rows(fixture: str, engine: str = "dsg") -> dict[str, object]:
+    assessor = _make_assessor()
+    assessor._raw_schema = (_FIXTURES / fixture).read_text(encoding="utf-8")
+    assessor._engine = engine
+    return {(r.dse_index, r.label): r for r in assessor._index_analysis(assessor._parse_source_schema())}
+
+
+def test_index_analysis_shows_which_indexes_need_the_search_backend() -> None:
+    """Live finding: the report never said which DSE indexes need OpenSearch / Elasticsearch on JanusGraph."""
+    rows = _index_rows("dse68_core_describe_food.groovy.txt")
+    recipe = rows[("recipe_search", "recipe")]
+    assert (recipe.jg_kind, recipe.backend, recipe.needs_search_backend) == (
+        "mixed",
+        "OpenSearch / Elasticsearch",
+        True,
+    )
+    assert "instructions: `Search.token*()` → `textContains`" in recipe.queries  # asText: tokenized
+    assert "cuisine: `Search.prefix/regex/fuzzy()` → `textPrefix`" in recipe.queries  # asString: whole value
+    assert "recipe_id: `eq`, `neq`" in recipe.queries  # Uuid: no ranges
+    assert "geo_point: `Geo.inside()` → `geoWithin" in rows[("location_search", "location")].queries
+    person = rows[("person_by_name", "person")]
+    assert (person.jg_kind, person.backend, person.needs_search_backend) == (
+        "composite",
+        "HCD (storage backend)",
+        False,
+    )
+    assert rows[("knows_by_since", "knows")].jg_kind == "composite"
+    geo = rows[("—", "location")]  # added by the translator for the Point property, no DSE counterpart
+    assert (geo.dse_kind, geo.jg_index, geo.jg_kind) == ("Point property", "location_geo_geo_point", "mixed")
+
+
+def test_index_analysis_classic_vertex_centric_and_secondary() -> None:
+    rows = _index_rows("dse69_classic_describe.groovy.txt", engine="classic")
+    assert rows[("knowsBySince", "knows")].jg_kind == "vertex-centric"
+    assert rows[("byName", "person")].jg_kind == "composite"
+    assert rows[("search", "person")].needs_search_backend
+
+
+def test_index_analysis_flags_a_text_key_indexed_both_ways() -> None:
+    """DSE indexes a Text key with neither asText() nor asString() both ways; JanusGraph defaults to TEXT only."""
+    assessor = _make_assessor()
+    assessor._raw_schema = (
+        "schema.vertexLabel('recipe').ifNotExists().partitionBy('recipe_id', Uuid).property('name', Text).create()\n"
+        "schema.vertexLabel('recipe').searchIndex().ifNotExists().by('name').create()\n"
+    )
+    (row,) = assessor._index_analysis(assessor._parse_source_schema())
+    assert "Mapping.TEXTSTRING" in row.queries
+
+
+def test_unparsable_schema_gives_no_index_rows_instead_of_raising() -> None:
+    assessor = _make_assessor()
+    assessor._raw_schema = "schema.vertexLabel('x')"
+    with patch("dse_jg_migrator.assessor.parse_schema", side_effect=ValueError("bad DSL")):
+        analysis = assessor._parse_source_schema()
+    assert assessor._index_analysis(analysis) == []
+
+
+def test_run_fills_overview_from_the_parsed_schema_and_probes() -> None:
+    """Live findings: schema_mode was always "Unknown" (a regex used as plain text) and olap_enabled always False."""
+    schema = (_FIXTURES / "dse68_core_describe_food.groovy.txt").read_text(encoding="utf-8")
+
+    def submit(script: str, bindings: dict | None = None) -> list:  # type: ignore[type-arg]
+        if script == "schema.describe()":
+            return [schema]
+        if script == "system.graph(name).describe()":
+            return ["system.graph('food').ifNotExists().withReplication(...).engine(Core).create() Production"]
+        if script.startswith("a.V()"):
+            return [0]  # OLAP answers
+        return []
+
+    assessor = _make_assessor()
+    with patch.object(assessor, "_gremlin_submit", side_effect=submit):
+        result = assessor.run()
+    o = result.cluster_overview
+    assert (o["vertex_label_count"], o["edge_label_count"]) == (3, 3)
+    assert o["indexes_by_kind"] == {"searchIndex": 2, "materializedView": 2}
+    assert o["mixed_index_count"] == 3
+    assert (o["schema_mode"], o["olap_enabled"]) == ("Production", True)
+    assert {r.dse_index for r in result.index_analysis} >= {"recipe_search", "person_by_name"}
