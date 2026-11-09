@@ -1,5 +1,6 @@
 // Template: iot
-// Covers: Bigint, Double, Float, Timestamp, composite multi-key index.
+// Covers: Bigint, Double, Float, Timestamp, Duration (CQL months/days/nanos), Decimal (exact and beyond
+// Double precision), composite multi-key index.
 // Tokens: {{GRAPH_NAME}}, {{VERTEX_COUNT}}, {{EDGE_COUNT}}
 
 system.graph('{{GRAPH_NAME}}').ifNotExists()
@@ -13,6 +14,8 @@ schema.vertexLabel('device').ifNotExists()
   .property('name', Text)
   .property('type', Text)
   .property('firmware_version', Text)
+  .property('sampling_interval', Duration)
+  .property('calibration_offset', Decimal)
   .create()
 
 schema.vertexLabel('reading').ifNotExists()
@@ -40,6 +43,10 @@ g = {{GRAPH_NAME}}.traversal()
     .property('name', "Device_${it}")
     .property('type', ['temperature','pressure','humidity','vibration'].get((int)(Math.random()*4)))
     .property('firmware_version', "1.${(int)(Math.random()*10)}.0")
+    // Core (DSG) Duration is a CQL duration; java.time.Duration is rejected (verified on DSE 6.9).
+    .property('sampling_interval', com.datastax.driver.core.Duration.newInstance(it % 3, it % 7, (it % 24) * 3600000000000L))
+    // Half exact (19.99), half beyond Double precision — exercises the migrator's LOSSY_DECIMAL count.
+    .property('calibration_offset', it % 2 == 0 ? new BigDecimal('19.99') : new BigDecimal("${it}.123456789012345678"))
     .iterate()
 }
 
@@ -48,7 +55,7 @@ devices = g.V().hasLabel('device').toList()
   d = devices.get((int)(Math.random() * devices.size()))
   r = g.addV('reading')
     .property('device_id', g.V(d).values('device_id').next())
-    .property('ts', new Date())
+    .property('ts', java.time.Instant.now())
     .property('sensor_value', Math.random() * 100)
     .property('raw_value', (long)(Math.random() * Long.MAX_VALUE))
     .property('quality', (float)(Math.random()))

@@ -108,7 +108,7 @@ class Assessor:
             kwargs["username"] = self._username
             kwargs["password"] = self._password
 
-        c = gremlin_client.Client(self.gremlin_url, "g", **kwargs)
+        c = gremlin_client.Client(self.gremlin_url, f"{self.graph_name}.g", **kwargs)
         try:
             result_set = c.submit(script, bindings or {})
             return result_set.all().result()
@@ -126,11 +126,9 @@ class Assessor:
                 "system.graph(name).describe()",
                 {"name": self.graph_name},
             )
-            desc_str = str(desc)
-            if "Core" in desc_str or "DSG" in desc_str:
-                self._engine = "dsg"
-            else:
-                self._engine = "classic"
+            # Verified against DSE 6.8: Classic describe() contains ".engine(Classic)";
+            # Core (DSG) describe() contains neither "Core" nor "DSG".
+            self._engine = "classic" if "Classic" in str(desc) else "dsg"
         except Exception:  # noqa: BLE001, S110
             self._engine = "dsg"  # assume dsg on failure
         return self._engine

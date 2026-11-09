@@ -53,23 +53,28 @@ g = {{GRAPH_NAME}}.traversal()
     .property('employee_id', UUID.randomUUID())
     .property('name', "Employee_${it}")
     .property('dept', ['Engineering','Finance','Legal','Operations'].get((int)(Math.random()*4)))
+    // UDT and tuple values (Core syntax verified on DSE 6.9): fields in the UDT's declared order.
+    .property('home_address', typeOf('address').create("${it} Main St", 'Springfield', String.format('%05d', it)))
+    .property('salary_range', tupleOf(Int, Int).create(50000 + it * 1000, 80000 + it * 1000))
     .iterate()
 }
 
-projectCount = Math.min({{VERTEX_COUNT}} / 10, 100) as int
+projectCount = Math.min(Math.max(1, (int)({{VERTEX_COUNT}}.intdiv(10))), 100)
 projectCount.times {
   g.addV('project')
     .property('project_id', UUID.randomUUID())
     .property('name', "Project_${it}")
+    .property('location', Geo.point(-73.9 + it * 0.1, 40.7 + it * 0.1))
     .iterate()
 }
 
-employees = g.V().hasLabel('employee').limit({{EDGE_COUNT}}).toList()
+// {{EDGE_COUNT}} distinct (employee, project) pairs: employee k -> project (k + k.intdiv(n)) mod p.
+employees = g.V().hasLabel('employee').toList()
 projects  = g.V().hasLabel('project').toList()
-employees.each { e ->
-  p = projects.get((int)(Math.random() * projects.size()))
-  g.addE('works_on').from(e).to(p)
-    .property('since', new Date())
-    .property('role', ['lead','contributor','reviewer'].get((int)(Math.random()*3)))
+n = employees.size()
+{{EDGE_COUNT}}.times { k ->
+  g.addE('works_on').from(employees.get(k % n)).to(projects.get((k % n + k.intdiv(n)) % projects.size()))
+    .property('since', java.time.LocalDate.now())
+    .property('role', ['lead','contributor','reviewer'].get(k % 3))
     .iterate()
 }

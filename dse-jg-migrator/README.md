@@ -2,8 +2,8 @@
 
 **DSE Graph → JanusGraph / HCD Migration Accelerator**
 
-Analyse, translate, initialise, and migrate DataStax Enterprise Graph workloads to
-JanusGraph backed by IBM Hyper-Converged Database (HCD) 2.x.
+Analyse, translate, initialise, and migrate **DataStax Enterprise** Graph workloads to
+_JanusGraph_ backed by IBM's **DataStax Hyper-Converged Database (HCD)** `2.x`.
 
 For the full implementation plan see
 [docs/DSEGraph_Migration_Accelerator.md](../docs/DSEGraph_Migration_Accelerator.md).
@@ -95,17 +95,21 @@ dse-jg-migrator analyse \
 dse-jg-migrator translate \
   --analysis food-analysis.json \
   --udt-strategy flat \
-  --map-strategy flat
+  --map-strategy flat \
+  --decimal-strategy double
 ```
 
-Options: `--udt-strategy flat|json`, `--map-strategy flat|json`
+Options: `--udt-strategy flat|json`, `--map-strategy flat|json`, `--decimal-strategy double|string`
+(`double` keeps Decimal numeric and reports inexact values; `string` stores the exact decimal — pass the
+same value to `migrate`).
 
 ### `init-target` — Apply JanusGraph schema to target cluster
 
 ```bash
 dse-jg-migrator init-target \
   --target-gremlin-url ws://localhost:8182/gremlin \
-  --schema food-janusgraph-schema.json
+  --schema food-janusgraph-schema.json \
+  --index-timeout 30          # minutes to wait for indexes to be ENABLED (default: 30)
 ```
 
 ### `migrate` — Move vertex and edge data
@@ -117,8 +121,16 @@ dse-jg-migrator migrate \
   --target-gremlin-url ws://localhost:8182/gremlin \
   --source-cql-host localhost --source-cql-port 9043 \
   --cql-fetch-size 1000 \
-  --write-batch 100
+  --write-batch 100 \
+  --udt-strategy flat --map-strategy flat --decimal-strategy double   # must match translate
 ```
+
+Core (DSG) graphs are read over CQL (`--source-cql-host`); Classic graphs over Gremlin. The migrator writes exactly
+the keys `translate` created, so pass it the same `--udt-strategy`, `--map-strategy` and `--decimal-strategy`
+(`run-all` does this for you).
+
+Each failed batch is retried 3 times (1 s/2 s/4 s). If a batch still fails, `migrate` lists the errors and
+exits 1; re-run the same command to resume — elements already migrated are skipped.
 
 ### `validate` — Compare source and target counts
 
@@ -149,6 +161,8 @@ dse-jg-migrator run-all \
 Flags: `--analyze-only` (stop after assessment), `--skip-assessment-gate`, `--seed --template food`
 
 ---
+
+Both `dse-jg-migrator ...` and `python -m dse_jg_migrator ...` invoke the same CLI. Sample outputs are in [`examples/`](examples/).
 
 ## Running tests
 

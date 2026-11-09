@@ -126,3 +126,87 @@ def test_run_overall_pass_false_on_mismatch(tmp_path) -> None:  # type: ignore[n
         report = v.run()
 
     assert not report["overall_pass"]
+
+
+# ---------------------------------------------------------------------------
+# Smoke tests
+# ---------------------------------------------------------------------------
+
+
+def test_smoke_tests_none_without_queries_path(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    assert _make_validator(tmp_path)._validate_smoke_tests() == []
+
+
+def test_smoke_tests_missing_file_returns_empty(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    v = _make_validator(tmp_path, validation_queries_path=str(tmp_path / "missing.groovy"))
+    assert v._validate_smoke_tests() == []
+
+
+def test_smoke_tests_match_mismatch_and_error(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    qfile = tmp_path / "q.groovy"
+    qfile.write_text("// comment\n\ng.V().count()\ng.E().count()\ng.boom()\n", encoding="utf-8")
+    v = _make_validator(tmp_path, validation_queries_path=str(qfile))
+
+    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
+        if "boom" in script:
+            raise RuntimeError("bad query")
+        if "E()" in script:
+            return [1] if "8183" in url else [2]
+        return [5]
+
+    with patch.object(v, "_submit", side_effect=mock_submit):
+        results = v._validate_smoke_tests()
+
+    assert [r["match"] for r in results] == [True, False, False]
+    assert results[2]["error"] == "bad query"
+
+
+def test_report_includes_smoke_section(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    qfile = tmp_path / "q.groovy"
+    qfile.write_text("g.V().count()\n", encoding="utf-8")
+    v = _make_validator(tmp_path, validation_queries_path=str(qfile))
+    with patch.object(v, "_submit", return_value=[100]):
+        v.run()
+    content = open(os.path.join(str(tmp_path), "food-validation-report.md"), encoding="utf-8").read()
+    assert "## Smoke Tests" in content
+
+
+def test_submit_passes_credentials_and_closes_client(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import sys
+    import types
+    from unittest.mock import MagicMock
+
+    v = _make_validator(tmp_path)
+    fake = types.ModuleType("gremlin_python.driver.client")
+    fake.Client = MagicMock()  # type: ignore[attr-defined]
+    fake.Client.return_value.submit.return_value.all.return_value.result.return_value = [7]
+    drv = types.ModuleType("gremlin_python.driver")
+    drv.client = fake  # type: ignore[attr-defined]
+    with patch.dict(
+        sys.modules,
+        {
+            "gremlin_python": types.ModuleType("gremlin_python"),
+            "gremlin_python.driver": drv,
+            "gremlin_python.driver.client": fake,
+        },
+    ):
+        assert v._submit("ws://x", "g.V().count()", {}, "u", "p") == [7]
+    fake.Client.assert_called_once_with("ws://x", "g", username="u", password="p")  # noqa: S106
+    fake.Client.return_value.close.assert_called_once()
+
+
+def test_empty_analysis_never_passes(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Live finding: an unparsed (Classic) schema gave 0 labels and validate reported '0/0 passed'."""
+    v = _make_validator(tmp_path, analysis=AnalysisResult(graph_name="g", engine="classic", extracted_at="x"))
+    report = v.run()
+    assert report["overall_pass"] is False
+    assert "nothing was validated" in report["reason"]
+
+
+def test_two_failed_counts_are_not_a_match(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    v = _make_validator(tmp_path)
+    with patch.object(v, "_submit", side_effect=RuntimeError("both endpoints down")):
+        report = v.run()
+    assert all(r["source"] == -1 and r["target"] == -1 for r in report["count_results"])
+    assert not any(r["match"] for r in report["count_results"])
+    assert report["overall_pass"] is False

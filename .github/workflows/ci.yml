@@ -82,12 +82,12 @@ jobs:
           pip install --upgrade pip setuptools wheel
           pip install -e . pytest pytest-cov
 
-      - name: pytest (unit tests, coverage ≥ 60%)
+      - name: pytest (unit tests, coverage ≥ 80%)
         run: |
           pytest tests/unit/ -v \
             --cov=dse_jg_migrator \
             --cov-report=term-missing \
-            --cov-fail-under=60
+            --cov-fail-under=80
 
   audit:
     name: Dependency vulnerability scan (pip-audit)
@@ -101,10 +101,29 @@ jobs:
           cache: pip
           cache-dependency-path: dse-jg-migrator/pyproject.toml
 
-      - name: Install build tools + package + pip-audit
-        run: |
-          pip install --upgrade pip setuptools wheel
-          pip install -e . pip-audit
+      - name: Install pip-audit
+        run: pip install pip-audit
 
-      - name: pip-audit (no known vulnerabilities)
-        run: pip-audit --local
+      - name: pip-audit against pinned requirements.lock (AGENTS.md §8.1/§8.2)
+        run: pip-audit -r requirements.lock --no-deps --disable-pip
+
+  secrets:
+    name: Secret scan (detect-secrets)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install detect-secrets
+        run: pip install detect-secrets==1.5.0
+
+      - name: Scan tracked files against baseline
+        run: |
+          git ls-files -z -- ':!bdp' ':!janusgraph' ':!dse-docs-new' \
+            | xargs -0 detect-secrets-hook --baseline .secrets.baseline

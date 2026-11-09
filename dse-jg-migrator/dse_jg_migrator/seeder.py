@@ -13,6 +13,9 @@ from dse_jg_migrator.models import SeederResult
 
 TEMPLATES: frozenset[str] = frozenset({"food", "social", "iot", "enterprise"})
 
+# `schema = <graph>.schema()` / `g = <graph>.traversal()` — provided by the "<graph>.g" alias.
+_BINDING_RE = re.compile(r"(schema|g)\s*=\s*\w+\.(schema|traversal)\(\)")
+
 
 class Seeder:
     """Creates a named DSE Graph and loads schema + synthetic data from a built-in template.
@@ -51,12 +54,24 @@ class Seeder:
         groovy = self._render_params(groovy)
         from gremlin_python.driver import client as gremlin_client
 
-        c = gremlin_client.Client(self.gremlin_url, "g")
+        # `system.*` statements run on the plain "g" source; everything after graph creation must
+        # use the "<graph>.g" alias (DSE does not keep `schema = <graph>.schema()` between requests).
+        system_client = gremlin_client.Client(self.gremlin_url, "g")
+        graph_client = None
         try:
             for statement in self._split_statements(groovy):
-                c.submit(statement).all().result()
+                if _BINDING_RE.fullmatch(statement):
+                    continue  # `schema = x.schema()` / `g = x.traversal()` — provided by the alias
+                if statement.startswith("system."):
+                    system_client.submit(statement).all().result()
+                    continue
+                if graph_client is None:
+                    graph_client = gremlin_client.Client(self.gremlin_url, f"{self.graph_name}.g")
+                graph_client.submit(statement).all().result()
         finally:
-            c.close()
+            system_client.close()
+            if graph_client is not None:
+                graph_client.close()
 
         return SeederResult(
             graph_name=self.graph_name,
@@ -96,7 +111,13 @@ class Seeder:
         Each statement is submitted as a separate Gremlin request to avoid
         Gremlin server timeout on large scripts.
         """
-        return [s.strip() for s in groovy.split("\n\n") if s.strip()]
+        statements: list[str] = []
+        for block in groovy.split("\n\n"):
+            lines = [ln for ln in block.splitlines() if not ln.lstrip().startswith("//")]
+            statement = "\n".join(lines).strip()
+            if statement:
+                statements.append(statement)
+        return statements
 
     def _build_assess_hint(self) -> str:
         return f"dse-jg-migrator assess --source-gremlin-url {self.gremlin_url} --graph-name {self.graph_name}"

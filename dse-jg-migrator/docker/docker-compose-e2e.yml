@@ -3,8 +3,9 @@
 #
 # Prerequisites:
 #   docker login cp.icr.io --username cp   (IBM entitlement key required for HCD image)
+#   (Podman users: `podman login cp.icr.io --username cp`)
 #
-# Usage:
+# Usage (Docker; for Podman substitute `podman compose` or `podman-compose`):
 #   docker compose -f docker/docker-compose-e2e.yml up -d
 #   docker compose -f docker/docker-compose-e2e.yml ps       # verify all healthy
 #   docker compose -f docker/docker-compose-e2e.yml down -v  # full teardown
@@ -19,21 +20,21 @@ volumes:
 
 services:
 
-  # ── TARGET: HCD 2.x (IBM Hyper-Converged Database) ─────────────────────────
+  # ── TARGET: HCD 2.x (DataStax Hyper-Converged Database) ─────────────────────────
   hcd:
     image: cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi
     platform: linux/amd64           # HCD ships amd64 only; Rosetta emulation on Apple Silicon
     container_name: migrator-hcd
     networks: [migrator-net]
-    mem_limit: 3G
+    mem_limit: 6G
     environment:
+      - QEMU_CPU=max                # Apple Silicon + QEMU: expose AVX2 (glibc x86-64-v3 check); ignored elsewhere
+      - CASSANDRA_LIBJEMALLOC=-     # Apple Silicon + QEMU: the jemalloc LD_PRELOAD segfaults under emulation; harmless elsewhere
       - MAX_HEAP_SIZE=1536M
       - CLUSTER_NAME=hcd_cluster
       - DS_LICENSE=accept
-      - HCD_AUTO_CONF_OFF=cassandra.yaml
       - JVM_EXTRA_OPTS=-Dcassandra.sai.latest.version=ec
     volumes:
-      - ${PWD}/hcd-dev/cassandra.yaml:/opt/hcd/resources/cassandra/conf/cassandra.yaml:ro
       - hcd-data:/var/lib/cassandra
     ports:
       - "9042:9042"                 # CQL — JanusGraph connects here
@@ -53,7 +54,9 @@ services:
     mem_limit: 1536M
     environment:
       - discovery.type=single-node
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_ADMIN_PASSWORD:-Admin_1234!}
+      # Security is disabled below, so no admin password is needed: skip the demo security config, which is
+      # the only thing that requires OPENSEARCH_INITIAL_ADMIN_PASSWORD. Keeps credentials out of this file.
+      - DISABLE_INSTALL_DEMO_CONFIG=true
       - plugins.security.disabled=true  # Disable security for local dev
       - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
     volumes:
@@ -108,22 +111,30 @@ services:
       retries: 6
       start_period: 30s
 
-  # ── SOURCE: DSE Graph 6.8 (Classic + DSG source for migration testing) ──────
+  # ── SOURCE: DSE Graph 6.9 (DSG/Core source for migration testing) ───────────
+  # 6.9 (Java 11) instead of 6.8 (Java 8): the 6.8 JVM wedged at a safepoint on every boot under QEMU
+  # emulation on Apple Silicon. On a native amd64 host, datastax/dse-server:6.8.65-ubi7 works here too.
   dse-graph-source:
-    image: datastax/dse-server:6.8.65-ubi7
+    image: datastax/dse-server:6.9.26-ubi
     container_name: migrator-dse-source
     networks: [migrator-net]
-    mem_limit: 2G
+    mem_limit: 6G                   # 2G and 4G were OOM-killed under emulation (heap + off-heap + DSE Graph)
+    cpus: 8                         # needs a VM with > 8 CPUs (podman machine set --cpus 10); bounded to leave headroom
+    # `-g` = Graph workload on top of core Cassandra (env DSE_GRAPH is ignored by this image);
+    # `-s` = DSE Search, needed by searchIndex() (food/enterprise templates, E2E). `["-g"]` suffices for social/iot.
+    command: ["-g", "-s"]
     environment:
       DS_LICENSE: accept
-      DSE_GRAPH: "1"               # Enables DSE Graph engine
+      MAX_HEAP_SIZE: 2G
+      HEAP_NEWSIZE: 400M
     volumes:
       - dse-data:/var/lib/cassandra
     ports:
       - "9043:9042"               # DSE CQL (offset to avoid clash with HCD on 9042)
       - "8183:8182"               # DSE Gremlin WebSocket
     healthcheck:
-      test: ["CMD-SHELL", "nodetool status | grep -q UN"]
+      # `nodetool status` reports UN before CQL is listening (observed under QEMU), so probe CQL itself.
+      test: ["CMD-SHELL", "cqlsh -e 'select release_version from system.local'"]
       interval: 15s
       timeout: 10s
       retries: 20

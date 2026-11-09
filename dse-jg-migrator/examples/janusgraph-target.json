@@ -1,0 +1,204 @@
+{
+  "propertyKeys": [
+    {
+      "key": "location_id",
+      "className": "java.util.UUID",
+      "cardinality": "SINGLE"
+    },
+    {
+      "key": "geo_point",
+      "className": "org.janusgraph.core.attribute.Geoshape",
+      "cardinality": "SINGLE"
+    },
+    {
+      "key": "name",
+      "className": "java.lang.String",
+      "cardinality": "SINGLE"
+    },
+    {
+      "key": "person_id",
+      "className": "java.util.UUID",
+      "cardinality": "SINGLE"
+    },
+    {
+      "key": "age",
+      "className": "java.lang.Integer",
+      "cardinality": "SINGLE"
+    },
+    {
+      "key": "badge_key",
+      "className": "java.lang.String",
+      "cardinality": "LIST"
+    },
+    {
+      "key": "badge_value",
+      "className": "java.lang.String",
+      "cardinality": "LIST"
+    },
+    {
+      "key": "nickname",
+      "className": "java.lang.String",
+      "cardinality": "SET"
+    },
+    {
+      "key": "recipe_id",
+      "className": "java.util.UUID",
+      "cardinality": "SINGLE"
+    },
+    {
+      "key": "cuisine",
+      "className": "java.lang.String",
+      "cardinality": "SINGLE"
+    },
+    {
+      "key": "instructions",
+      "className": "java.lang.String",
+      "cardinality": "SINGLE"
+    },
+    {
+      "key": "tags",
+      "className": "java.lang.String",
+      "cardinality": "SET"
+    },
+    {
+      "key": "created_on",
+      "className": "java.util.Date",
+      "cardinality": "SINGLE"
+    },
+    {
+      "key": "since",
+      "className": "java.util.Date",
+      "cardinality": "SINGLE"
+    }
+  ],
+  "vertexLabels": [
+    {
+      "label": "location",
+      "staticVertex": false,
+      "partition": false
+    },
+    {
+      "label": "person",
+      "staticVertex": false,
+      "partition": false
+    },
+    {
+      "label": "recipe",
+      "staticVertex": false,
+      "partition": false
+    }
+  ],
+  "edgeLabels": [
+    {
+      "label": "created",
+      "multiplicity": "MULTI",
+      "unidirected": false
+    },
+    {
+      "label": "knows",
+      "multiplicity": "MULTI",
+      "unidirected": false
+    },
+    {
+      "label": "located_at",
+      "multiplicity": "MULTI",
+      "unidirected": false
+    }
+  ],
+  "compositeIndexes": [
+    {
+      "name": "person_by_name",
+      "typeClass": "org.apache.tinkerpop.gremlin.structure.Vertex",
+      "indexOnly": "person",
+      "unique": false,
+      "keys": [
+        {
+          "propertyKey": "name",
+          "parameters": []
+        }
+      ]
+    },
+    {
+      "name": "knows_by_since",
+      "typeClass": "org.apache.tinkerpop.gremlin.structure.Edge",
+      "indexOnly": "knows",
+      "unique": false,
+      "keys": [
+        {
+          "propertyKey": "since",
+          "parameters": []
+        }
+      ]
+    }
+  ],
+  "mixedIndexes": [
+    {
+      "name": "location_geo_geo_point",
+      "typeClass": "org.apache.tinkerpop.gremlin.structure.Vertex",
+      "indexOnly": "location",
+      "indexBackend": "search",
+      "keys": [
+        {
+          "propertyKey": "geo_point",
+          "parameters": [
+            {
+              "key": "mapping",
+              "value": "org.janusgraph.core.schema.Mapping.PREFIX_TREE",
+              "parser": "enum"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "location_search",
+      "typeClass": "org.apache.tinkerpop.gremlin.structure.Vertex",
+      "indexOnly": "location",
+      "indexBackend": "search",
+      "keys": [
+        {
+          "propertyKey": "location_id",
+          "parameters": []
+        },
+        {
+          "propertyKey": "geo_point",
+          "parameters": []
+        }
+      ]
+    },
+    {
+      "name": "recipe_search",
+      "typeClass": "org.apache.tinkerpop.gremlin.structure.Vertex",
+      "indexOnly": "recipe",
+      "indexBackend": "search",
+      "keys": [
+        {
+          "propertyKey": "recipe_id",
+          "parameters": []
+        },
+        {
+          "propertyKey": "cuisine",
+          "parameters": [
+            {
+              "key": "mapping",
+              "value": "org.janusgraph.core.schema.Mapping.STRING",
+              "parser": "enum"
+            }
+          ]
+        },
+        {
+          "propertyKey": "instructions",
+          "parameters": [
+            {
+              "key": "mapping",
+              "value": "org.janusgraph.core.schema.Mapping.TEXT",
+              "parser": "enum"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "vertexCentricEdgeIndexes": [],
+  "vertexCentricPropertyIndexes": []
+}

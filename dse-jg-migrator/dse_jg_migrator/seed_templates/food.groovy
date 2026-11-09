@@ -61,6 +61,8 @@ g = {{GRAPH_NAME}}.traversal()
     .property('person_id', UUID.randomUUID())
     .property('name', "Person_${it}")
     .property('age', (int)(Math.random() * 60 + 20))
+    .property('nickname', (it % 3 == 0 ? ["p${it}", 'chef'] : ["p${it}"]) as Set)
+    .property('badge', it % 2 == 0 ? ['gold': java.time.LocalDate.now(), 'early': java.time.LocalDate.of(2020, 1, 1)] : [:])
     .iterate()
 }
 
@@ -71,16 +73,36 @@ recipeCount.times {
     .property('name', "Recipe_${it}")
     .property('instructions', "Step 1: Prepare ingredients for recipe ${it}. Step 2: Cook.")
     .property('cuisine', ['Italian','French','Japanese','Mexican','Indian'].get((int)(Math.random()*5)))
+    .property('tags', (it % 2 == 0 ? ['quick', 'veg'] : ['slow']) as Set)
     .iterate()
 }
 
-people  = g.V().hasLabel('person').limit({{EDGE_COUNT}}).toList()
+locationCount = Math.max(1, {{VERTEX_COUNT}}.intdiv(10))
+locationCount.times {
+  g.addV('location')
+    .property('location_id', UUID.randomUUID())
+    .property('name', "Location_${it}")
+    .property('geo_point', Geo.point(-120.0 + it, 30.0 + it * 0.5))
+    .iterate()
+}
+
+// {{EDGE_COUNT}} distinct pairs per edge label. DSG keys an edge row by its (out, in) pair, so pairs must be unique:
+// knows: person k -> person k + 1 + k.intdiv(n) (mod n); created: person k -> recipe (k + k.intdiv(n)) mod m.
+people  = g.V().hasLabel('person').toList()
 recipes = g.V().hasLabel('recipe').toList()
-people.eachWithIndex { p, i ->
-  r = recipes.get((int)(Math.random() * recipes.size()))
-  g.addE('created').from(p).to(r).property('created_on', new Date()).iterate()
-  if (i + 1 < people.size()) {
-    g.addE('knows').from(p).to(people.get(i + 1))
-      .property('since', new Date()).iterate()
+n = people.size()
+m = recipes.size()
+{{EDGE_COUNT}}.times { k ->
+  if (n > 1) {
+    g.addE('knows').from(people.get(k % n)).to(people.get((k % n + 1 + k.intdiv(n) % (n - 1)) % n))
+      .property('since', java.time.LocalDate.now().minusDays(k)).iterate()
   }
+  g.addE('created').from(people.get(k % n)).to(recipes.get((k % n + k.intdiv(n)) % m))
+    .property('created_on', java.time.LocalDate.now()).iterate()
+}
+
+// Each person is located at one location (re-reads vertices: every blank-line block is a separate request).
+places = g.V().hasLabel('location').toList()
+g.V().hasLabel('person').toList().eachWithIndex { p, i ->
+  g.addE('located_at').from(p).to(places.get(i % places.size())).iterate()
 }

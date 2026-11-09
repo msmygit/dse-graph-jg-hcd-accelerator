@@ -230,3 +230,88 @@ def test_explicit_graph_name_overrides_template() -> None:
         graph_name="my_social_graph",
     )
     assert seeder.graph_name == "my_social_graph"
+
+
+# ---------------------------------------------------------------------------
+# Real run() / template loading (no replacement of Seeder.run)
+# ---------------------------------------------------------------------------
+
+
+def _fake_gremlin_modules(client_cls: MagicMock) -> dict:  # type: ignore[type-arg]
+    import types
+
+    client_mod = types.ModuleType("gremlin_python.driver.client")
+    client_mod.Client = client_cls  # type: ignore[attr-defined]
+    drv = types.ModuleType("gremlin_python.driver")
+    drv.client = client_mod  # type: ignore[attr-defined]
+    return {
+        "gremlin_python": types.ModuleType("gremlin_python"),
+        "gremlin_python.driver": drv,
+        "gremlin_python.driver.client": client_mod,
+    }
+
+
+def _two_clients() -> tuple[MagicMock, MagicMock, MagicMock]:
+    """Return (client_cls, system_client, graph_client) keyed on the traversal-source argument."""
+    system_client, graph_client = MagicMock(), MagicMock()
+    client_cls = MagicMock(side_effect=lambda _url, source: system_client if source == "g" else graph_client)
+    return client_cls, system_client, graph_client
+
+
+def test_real_run_routes_system_and_graph_statements_and_closes_clients() -> None:
+    client_cls, system_client, graph_client = _two_clients()
+    seeder = Seeder("ws://localhost:8183/gremlin", "food", "food", 5, 5)
+    with patch.dict("sys.modules", _fake_gremlin_modules(client_cls)):
+        result = seeder.run()
+    sources = [c.args[1] for c in client_cls.call_args_list]
+    assert sources == ["g", "food.g"]
+    assert system_client.submit.call_count == 1
+    assert str(system_client.submit.call_args.args[0]).startswith("system.")
+    assert graph_client.submit.call_count >= 2
+    for call in graph_client.submit.call_args_list:
+        statement = str(call.args[0])
+        assert not statement.startswith("system.")
+        assert not statement.startswith("schema =")
+        assert not statement.startswith("g =")
+    system_client.close.assert_called_once()
+    graph_client.close.assert_called_once()
+    assert result.graph_name == "food"
+
+
+def test_real_run_closes_clients_when_submit_fails() -> None:
+    client_cls, system_client, graph_client = _two_clients()
+    graph_client.submit.side_effect = RuntimeError("boom")
+    seeder = Seeder("ws://localhost:8183/gremlin", "food")
+    with patch.dict("sys.modules", _fake_gremlin_modules(client_cls)), pytest.raises(RuntimeError):
+        seeder.run()
+    system_client.close.assert_called_once()
+    graph_client.close.assert_called_once()
+
+
+def test_split_statements_drops_comment_only_blocks() -> None:
+    assert Seeder._split_statements("// header\n\nschema.a()\n// note\n.b()\n\n// only comment") == ["schema.a()\n.b()"]
+
+
+@pytest.mark.parametrize("template", ["food", "social", "iot", "enterprise"])
+def test_every_packaged_template_loads_and_renders_without_tokens(template: str) -> None:
+    seeder = Seeder("ws://localhost:8183/gremlin", template, vertex_count=3, edge_count=4)
+    rendered = seeder._render_params(seeder._load_template())
+    assert "{{" not in rendered
+    assert seeder._split_statements(rendered)
+
+
+@pytest.mark.parametrize("template", sorted(TEMPLATES))
+def test_template_blocks_do_not_share_script_variables(template: str) -> None:
+    """Each blank-line block is a separate, sessionless Gremlin request (found live on DSE 6.9), so a variable
+    assigned in one block is undefined in the next. ``g`` and ``schema`` are bound by DSE on every request."""
+    import re
+
+    seeder = Seeder(gremlin_url="ws://localhost:8183/gremlin", template=template, graph_name="t")
+    blocks = Seeder._split_statements(seeder._render_params(seeder._load_template()))
+    assigned = [set(re.findall(r"^\s*(\w+)\s*=(?!=)", block, flags=re.MULTILINE)) - {"g", "schema"} for block in blocks]
+    for i, block in enumerate(blocks):
+        for j, names in enumerate(assigned):
+            if j == i:
+                continue
+            leaked = {n for n in names - assigned[i] if re.search(rf"\b{n}\b", block)}
+            assert not leaked, f"{template} block {i} uses {leaked} assigned only in block {j}"

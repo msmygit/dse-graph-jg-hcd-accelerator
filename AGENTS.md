@@ -6,6 +6,12 @@
 
 ---
 
+## 0. Philosophies and Architecture principles
+- Always use Zen of Python philosophies and pydantic architectural principles.
+- When something fails, retry it thrice and if still fails, clearly document what was attempted, what is the environment, what comments were issued, what is the stacktrace, any other context that will help investigation and ask me to review.
+- Every feature should be traceable within a spec document that is implemented per the plan and merged into `main` branch via a pull request.
+- Learnings along the way should be documented at the project's root at docs/LEARNINGS.md and repeated items should be created as a skill for reuse later.
+
 ## 1. Canonical Plan — Single Source of Truth
 
 The authoritative implementation plan is:
@@ -133,6 +139,7 @@ dse-jg-migrator/
 │   ├── docker-compose-e2e.yml
 │   ├── janusgraph-hcd.properties
 │   ├── seed_dse.groovy
+│   ├── up.sh                     # ordered, health-gated startup (Podman-safe)
 │   └── README.md
 └── examples/
     ├── food-graph-schema.json
@@ -302,7 +309,7 @@ The following must **never** appear in any committed file:
 ### 6.2 How to handle credentials
 
 - All credentials are injected via environment variables at runtime.
-- Docker Compose files use `${VARIABLE:-default}` substitution for all passwords.
+- Docker Compose files use `${VARIABLE:-default}` substitution for all passwords, but this project's convention is: no defaults for passwords: use `${VARIABLE:?message}`, or avoid the credential.
 - `config.py` must load credentials exclusively from environment variables or
   a `--password` CLI flag. No hardcoded credential strings.
 - Add the following patterns to `.gitignore`:
@@ -333,7 +340,7 @@ detect-secrets scan > .secrets.baseline
 # pre-commit config (.pre-commit-config.yaml)
 repos:
   - repo: https://github.com/Yelp/detect-secrets
-    rev: v1.4.0
+    rev: v1.5.0
     hooks:
       - id: detect-secrets
         args: ['--baseline', '.secrets.baseline']

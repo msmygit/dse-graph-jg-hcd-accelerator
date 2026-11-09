@@ -1,0 +1,261 @@
+{
+  "graph_name": "food",
+  "engine": "dsg",
+  "extracted_at": "2026-11-09T12:26:30.068608Z",
+  "vertex_labels": [
+    {
+      "label": "location",
+      "partition_keys": [
+        {
+          "name": "location_id",
+          "type": "Uuid"
+        }
+      ],
+      "clustering_keys": [],
+      "properties": [
+        {
+          "name": "geo_point",
+          "type": "Point",
+          "cardinality": "SINGLE",
+          "collection": null,
+          "map_key_type": null,
+          "map_value_type": null
+        },
+        {
+          "name": "name",
+          "type": "Varchar",
+          "cardinality": "SINGLE",
+          "collection": null,
+          "map_key_type": null,
+          "map_value_type": null
+        }
+      ],
+      "count": 5
+    },
+    {
+      "label": "person",
+      "partition_keys": [
+        {
+          "name": "person_id",
+          "type": "Uuid"
+        }
+      ],
+      "clustering_keys": [],
+      "properties": [
+        {
+          "name": "age",
+          "type": "Int",
+          "cardinality": "SINGLE",
+          "collection": null,
+          "map_key_type": null,
+          "map_value_type": null
+        },
+        {
+          "name": "name",
+          "type": "Varchar",
+          "cardinality": "SINGLE",
+          "collection": null,
+          "map_key_type": null,
+          "map_value_type": null
+        },
+        {
+          "name": "badge",
+          "type": "mapOf(Varchar, Date)",
+          "cardinality": "LIST",
+          "collection": "map",
+          "map_key_type": "Varchar",
+          "map_value_type": "Date"
+        },
+        {
+          "name": "nickname",
+          "type": "Varchar",
+          "cardinality": "SET",
+          "collection": "set",
+          "map_key_type": null,
+          "map_value_type": null
+        }
+      ],
+      "count": 50
+    },
+    {
+      "label": "recipe",
+      "partition_keys": [
+        {
+          "name": "recipe_id",
+          "type": "Uuid"
+        }
+      ],
+      "clustering_keys": [],
+      "properties": [
+        {
+          "name": "cuisine",
+          "type": "Varchar",
+          "cardinality": "SINGLE",
+          "collection": null,
+          "map_key_type": null,
+          "map_value_type": null
+        },
+        {
+          "name": "instructions",
+          "type": "Varchar",
+          "cardinality": "SINGLE",
+          "collection": null,
+          "map_key_type": null,
+          "map_value_type": null
+        },
+        {
+          "name": "name",
+          "type": "Varchar",
+          "cardinality": "SINGLE",
+          "collection": null,
+          "map_key_type": null,
+          "map_value_type": null
+        },
+        {
+          "name": "tags",
+          "type": "Varchar",
+          "cardinality": "SET",
+          "collection": "set",
+          "map_key_type": null,
+          "map_value_type": null
+        }
+      ],
+      "count": 50
+    }
+  ],
+  "edge_labels": [
+    {
+      "label": "created",
+      "from_label": "person",
+      "to_label": "recipe",
+      "properties": [
+        {
+          "name": "created_on",
+          "type": "Date",
+          "cardinality": "SINGLE",
+          "collection": null,
+          "map_key_type": null,
+          "map_value_type": null
+        }
+      ],
+      "count": 100,
+      "table_name": "person__created__recipe"
+    },
+    {
+      "label": "knows",
+      "from_label": "person",
+      "to_label": "person",
+      "properties": [
+        {
+          "name": "since",
+          "type": "Date",
+          "cardinality": "SINGLE",
+          "collection": null,
+          "map_key_type": null,
+          "map_value_type": null
+        }
+      ],
+      "count": 100,
+      "table_name": "person__knows__person"
+    },
+    {
+      "label": "located_at",
+      "from_label": "person",
+      "to_label": "location",
+      "properties": [],
+      "count": 50,
+      "table_name": "person__located_at__location"
+    }
+  ],
+  "udts": [],
+  "indexes": [
+    {
+      "kind": "searchIndex",
+      "name": "location_search",
+      "element": "vertex",
+      "label": "location",
+      "keys": [
+        {
+          "name": "location_id",
+          "as_mapping": null
+        },
+        {
+          "name": "geo_point",
+          "as_mapping": null
+        }
+      ],
+      "direction": null,
+      "order": null,
+      "inverse": false,
+      "from_label": null,
+      "to_label": null
+    },
+    {
+      "kind": "materializedView",
+      "name": "person_by_name",
+      "element": "vertex",
+      "label": "person",
+      "keys": [
+        {
+          "name": "name",
+          "as_mapping": null
+        }
+      ],
+      "direction": null,
+      "order": null,
+      "inverse": false,
+      "from_label": null,
+      "to_label": null
+    },
+    {
+      "kind": "searchIndex",
+      "name": "recipe_search",
+      "element": "vertex",
+      "label": "recipe",
+      "keys": [
+        {
+          "name": "recipe_id",
+          "as_mapping": null
+        },
+        {
+          "name": "cuisine",
+          "as_mapping": "asString"
+        },
+        {
+          "name": "instructions",
+          "as_mapping": "asText"
+        }
+      ],
+      "direction": null,
+      "order": null,
+      "inverse": false,
+      "from_label": null,
+      "to_label": null
+    },
+    {
+      "kind": "materializedView",
+      "name": "knows_by_since",
+      "element": "edge",
+      "label": "knows",
+      "keys": [
+        {
+          "name": "since",
+          "as_mapping": null
+        }
+      ],
+      "direction": null,
+      "order": null,
+      "inverse": false,
+      "from_label": null,
+      "to_label": null
+    }
+  ],
+  "config": {
+    "schema_mode": "Development",
+    "allow_scan": true,
+    "replication": "",
+    "restrict_lambda": false,
+    "olap_enabled": false,
+    "rlac_enabled": false
+  }
+}

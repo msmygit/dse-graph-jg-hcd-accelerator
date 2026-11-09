@@ -141,6 +141,38 @@ class AnalysisResult:
 
         return cast(dict[str, Any], _convert(self))
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AnalysisResult:  # noqa: ANN401  # parsed JSON is heterogeneous
+        """Rebuild an AnalysisResult from ``to_dict()`` output (the analyser's JSON) — its exact inverse."""
+        return cls(
+            graph_name=data.get("graph_name", ""),
+            engine=data.get("engine", "dsg"),
+            extracted_at=data.get("extracted_at", ""),
+            vertex_labels=[
+                VertexLabelDefinition(
+                    label=v["label"],
+                    partition_keys=[PartitionKey(**k) for k in v.get("partition_keys", [])],
+                    clustering_keys=[ClusteringKey(**k) for k in v.get("clustering_keys", [])],
+                    properties=[PropertyDefinition(**p) for p in v.get("properties", [])],
+                    count=v.get("count", 0),
+                )
+                for v in data.get("vertex_labels", [])
+            ],
+            edge_labels=[
+                EdgeLabelDefinition(**{**e, "properties": [PropertyDefinition(**p) for p in e.get("properties", [])]})
+                for e in data.get("edge_labels", [])
+            ],
+            udts=[
+                UDTDefinition(name=u["name"], fields=[UDTField(**f) for f in u.get("fields", [])])
+                for u in data.get("udts", [])
+            ],
+            indexes=[
+                IndexDefinition(**{"element": "vertex", **i, "keys": [IndexKey(**k) for k in i.get("keys", [])]})
+                for i in data.get("indexes", [])
+            ],
+            config=GraphConfig(**data.get("config", {})),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Assessment models (populated by assessor.py)

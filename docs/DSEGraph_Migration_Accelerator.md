@@ -1,6 +1,7 @@
 # DSE Graph → JanusGraph / HCD Migration Accelerator — Implementation Plan
 
-> **Status:** ✅ Complete — all sub-tasks ST-0 through ST-9 implemented
+> **Status:** 🟡 Implemented, not fully verified — ST-1 is done; ST-0, ST-2 … ST-9 are implemented and unit-tested (≥ 80% coverage per module, no coverage omissions) but have **never been run against a real DSE/HCD/JanusGraph cluster**. Remaining work: run the Docker E2E stack and fix what it finds.
+> **Status legend:** `[x] done` = implemented and verified end-to-end · `[~]` = implemented and unit-tested, live verification outstanding · `[ ] pending`.
 > **Goal:** Build a lightweight CLI tool that (0) optionally seeds a DSE Graph cluster with a representative sample workload for demo/testing, (1) runs a non-destructive pre-migration compatibility assessment, (2) analyses a live DSE Graph cluster, (3) generates a migration plan, and (4) executes the schema + data migration to JanusGraph with HCD as its CQL backend.
 > **Sources:** `bdp/dse-graph/`, `dse-docs-new/modules/graph/`, `janusgraph/`, project structure exploration (November 2026).
 
@@ -36,8 +37,8 @@ DataStax Enterprise (DSE) Graph provides two distinct graph engines on top of Ca
 
 | Engine | DSE Version | Key Characteristic |
 |--------|-------------|-------------------|
-| **Classic** | ≤ 6.7 | Custom graph storage layer, bidirectional edges, meta-properties, `graph.tx()` API |
-| **DSG (Core / NGDG)** | 6.8+ (default) | 1:1 graph-to-CQL-keyspace mapping; Gremlin + CQL dual access; unidirectional edges |
+| **Classic** | 5.1 & 6.7 | Custom graph storage layer, bidirectional edges, meta-properties, `graph.tx()` API |
+| **DSG (Core / NGDG)** | 6.8+ (default, [but has an option for Graph Classic](./dse-docs-new/modules/graph/pages/reference/system/classic-engine.adoc)) | 1:1 graph-to-CQL-keyspace mapping; Gremlin + CQL dual access; unidirectional edges |
 
 Both engines use [Apache TinkerPop 3.x](https://tinkerpop.apache.org/) as the Gremlin API layer, which is the same layer JanusGraph exposes. This means Gremlin traversals remain largely portable; the migration challenge sits in:
 
@@ -183,7 +184,7 @@ IDs **cannot be preserved**. The migrator must maintain a mapping table (`old_id
 
 ## Sub-Task 0 — Pre-Migration Compatibility Assessment
 
-**Status:** `[x] done`
+**Status:** `[x] done` — verified live 2026-11-09 against DSE 6.9.26 (Core + Classic) → JanusGraph + HCD 2.0.8 + OpenSearch 3: `assess` on 5 graphs (~1–2 s each, incl. HCD pre-flight); E2E asserts < 60 s.
 
 > **This sub-task is a mandatory gateway.** The `assess` command must succeed and the user must review the report before `run-all` or any individual migration sub-command will proceed. It is intentionally **read-only** and **non-destructive** — it can be run any number of times without affecting the source cluster.
 
@@ -1015,7 +1016,7 @@ def run_all(ctx, analyze_only, skip_assessment_gate, **kwargs):
 
 ## Sub-Task 1 — Project Scaffold
 
-**Status:** `[x] done`
+**Status:** `[x] done` (`python -m dse_jg_migrator --help`, `examples/`, `tests/fixtures/`, `requirements.lock`, `.pre-commit-config.yaml` and `.secrets.baseline` all present)
 
 ### Intent
 Create the Python project structure, dependency manifest, and development environment for the `dse-jg-migrator` tool.
@@ -1108,7 +1109,7 @@ Create the Python project structure, dependency manifest, and development enviro
 
 ## Sub-Task 2 — DSE Graph Analyser
 
-**Status:** `[x] done`
+**Status:** `[x] done` — verified live 2026-11-09 against DSE 6.9.26 (Core + Classic) → JanusGraph + HCD 2.0.8 + OpenSearch 3: Core and Classic `schema.describe()` parsed (Classic grammar added — see Appendix E.10).
 
 ### Intent
 Connect to the source DSE Graph cluster and extract a complete, structured description of the graph schema, configuration, and basic statistics (vertex/edge counts per label). This is the *read-only discovery phase* — no writes to either cluster.
@@ -1284,7 +1285,7 @@ Connect to the source DSE Graph cluster and extract a complete, structured descr
 
 ## Sub-Task 3 — Schema Translator
 
-**Status:** `[x] done`
+**Status:** `[x] done` — verified live 2026-11-09 against DSE 6.9.26 (Core + Classic) → JanusGraph + HCD 2.0.8 + OpenSearch 3: 5 graphs translated; documented-types-only `TYPE_MAP`; UDT/tuple/Decimal/Duration rules.
 
 ### Intent
 Transform the `<graph-name>-analysis.json` (DSE schema representation) into a JanusGraph-compatible JSON schema definition consumable by `JsonSchemaInitStrategy`. This is a pure data transformation — no network calls required.
@@ -1310,23 +1311,49 @@ Transform the `<graph-name>-analysis.json` (DSE schema representation) into a Ja
        "Boolean": "java.lang.Boolean",
        "Float": "java.lang.Float",
        "Double": "java.lang.Double",
-       "Decimal": "java.math.BigDecimal",
-       "Varint": "java.math.BigInteger",
+       "Decimal": "java.lang.Double",     # lossy — BigDecimal is unsupported by JanusGraph
+       "Varint": "java.lang.String",     # BigInteger is unsupported; decimal string is lossless
        "Uuid": "java.util.UUID",
        "Timeuuid": "java.util.UUID",
        "Timestamp": "java.util.Date",
-       "Date": "java.time.LocalDate",
-       "Time": "java.time.LocalTime",
+       "Date": "java.util.Date",         # LocalDate is unsupported; midnight UTC
+       "Time": "java.lang.String",       # LocalTime is unsupported; ISO-8601 string
        "Instant": "java.util.Date",
        "Blob": "byte[]",
-       "Inet": "java.net.InetAddress",
-       "Duration": "java.time.Duration",
-       # Geospatial — mapped to String (WKT) for the property key;
-       # a companion mixed index with geo_point mapping is created automatically.
-       "Point":      "java.lang.String",   # stored as WKT; geo_point mixed index added
+       "Inet": "java.lang.String",       # InetAddress is unsupported; textual address
+       "Duration": "java.lang.Long",     # Classic stores millis; Core overrides to an ISO-8601 String (below)
+       # Geospatial — Point becomes a Geoshape (a PREFIX_TREE mixed index cannot be built on a String);
+       # the migrator converts DSE WKT with Geoshape.fromWkt(). Verified on a live JanusGraph.
+       "Point":      "org.janusgraph.core.attribute.Geoshape",
        "Polygon":    "java.lang.String",   # stored as WKT; no geo index (non-point types)
        "Linestring": "java.lang.String",   # stored as WKT; no geo index
    }
+   ```
+
+   **Documented types only.** Every `TYPE_MAP` target must be a data type listed in the JanusGraph
+   docs ([Property Key Data Type](https://docs.janusgraph.org/schema/#property-key-data-type): String,
+   Character, Boolean, Byte, Short, Integer, Long, Float, Double, Date, Geoshape, UUID) or a primitive
+   array (`byte[]`, per `advanced-topics/serializer.md`). `java.time.Duration`/`Instant` happen to work
+   (they are registered internally by `StandardSerializer`) but are not a public contract, so they are not
+   used. Enforced by `tests/unit/test_translator.py::test_type_map_targets_are_documented_janusgraph_types`.
+
+   **Engine- and strategy-dependent types.** One function, `resolve_target_class(dse_type, engine,
+   decimal_strategy)` in `translator.py`, is the single source of truth used by both the translator and the
+   migrator:
+   - `Duration` — Classic stores `java.time.Duration` as bigint millis (`bdp/dse-graph/.../
+     BasicValueTypeInternal.java`) → `java.lang.Long` (millis, lossless). Core (DSG) stores CQL
+     `duration(months, days, nanos)` (`bdp/dse-graph-server/.../schema/Column.java`, no `java.time`
+     conversion) → `java.lang.String` as ISO-8601, e.g. `P1M2DT3.000000004S` (lossless; calendar
+     months/days have no fixed length, so no numeric type can hold them exactly).
+   - `Decimal` — `--decimal-strategy double` (default) → `java.lang.Double`, keeping numeric predicates and
+     numeric mixed indexes; `--decimal-strategy string` → exact decimal `java.lang.String`. JanusGraph has
+     no `BigDecimal` serializer, and a custom attribute (`attributes.custom.*`) would need a server-side jar
+     and still could not be mixed-indexed (`ElasticSearchIndex` maps only boxed primitives), so it is not
+     offered. The DSE docs recommend `Decimal` for currency, so with `double` the migrator counts values that
+     do not round-trip exactly (see Sub-Task 5, step 11).
+
+   ```python
+   # (illustrative) resolve_target_class("Duration", engine="dsg", decimal_strategy="double") -> "java.lang.String"
 
    # Property keys whose DSE type was geospatial — the translator creates an
    # additional mixed index entry with Geo mapping for Point properties.
@@ -1486,7 +1513,7 @@ Transform the `<graph-name>-analysis.json` (DSE schema representation) into a Ja
 
 ## Sub-Task 4 — JanusGraph / HCD Target Initialiser
 
-**Status:** `[x] done`
+**Status:** `[x] done` — verified live 2026-11-09 against DSE 6.9.26 (Core + Classic) → JanusGraph + HCD 2.0.8 + OpenSearch 3: idempotent init; indexes over pre-existing keys promoted REGISTER→REINDEX→ENABLED.
 
 ### Intent
 Apply the translated JanusGraph JSON schema to the target JanusGraph + HCD cluster, then verify that all schema elements were created successfully.
@@ -1584,7 +1611,7 @@ Apply the translated JanusGraph JSON schema to the target JanusGraph + HCD clust
 
 ## Sub-Task 5 — Data Migrator
 
-**Status:** `[x] done`
+**Status:** `[x] done` — verified live 2026-11-09 against DSE 6.9.26 (Core + Classic) → JanusGraph + HCD 2.0.8 + OpenSearch 3: CQL (Core) and Gremlin-paged (Classic) paths, field-by-field value checks, checkpoint resume and batch retry exercised.
 
 ### Intent
 Move all vertex and edge data from the DSE Graph cluster to the JanusGraph + HCD cluster in a resumable, batched, fault-tolerant manner.
@@ -1753,7 +1780,11 @@ Move all vertex and edge data from the DSE Graph cluster to the JanusGraph + HCD
        return conn
    ```
 
-   The checkpoint is updated after every write batch flush. Restart resumes from the last committed offset in `progress`.
+   The checkpoint is updated after every write batch flush. Resume is **idempotent per element**: on a
+   re-run, a vertex whose `old_id` is already in `id_map` is skipped, and an edge whose key is already in
+   `edge_map` is skipped. `edge_map(old_key TEXT PRIMARY KEY, new_id TEXT NOT NULL)` keys a CQL edge row by
+   `<table>:<JSON list of its primary-key column values>` and a Classic edge by its source edge id. A label
+   is marked `completed=1` only if none of its batches failed.
 
 7. **Ordering constraint.** Migrate ALL vertices first (all labels). Optionally parallelise vertex labels with `--parallel-labels N` (default 1); each label gets its own Gremlin connection and thread; SQLite WAL allows concurrent writes. Start edge migration only after ALL vertex labels report `completed=1` in the checkpoint.
 
@@ -1766,6 +1797,32 @@ Move all vertex and edge data from the DSE Graph cluster to the JanusGraph + HCD
    ```
    Individual failures (missing vertex IDs, type serialisation errors) are logged at `ERROR` level with their source row identifiers for post-run triage.
 
+10. **Retry and failure semantics.** Every batch write goes through one helper that retries a failed
+    request 3 times with exponential backoff (1 s, 2 s, 4 s) — AGENTS.md §0. A batch that still fails is
+    logged at `ERROR` (target host/port, label, batch size, exception), recorded as a `BATCH_FAILED` audit
+    event and in `stats["errors"]`, and leaves its label incomplete. Edge migration does not start while any
+    vertex label is incomplete. `migrate` prints the errors and exits non-zero; re-running `migrate` retries
+    only the elements missing from `id_map`/`edge_map`. Edges whose endpoint is not in `id_map` after all
+    vertices completed (dangling in the source) are counted per label in `stats["missing_endpoints"]` and
+    audited as `MISSING_ENDPOINTS`; they do not block completion.
+    *Residual risk:* if the server commits a batch but the client times out, the retry writes that batch a
+    second time. The validator's count check exposes this.
+
+11. **Target-type value conversion.** Values are converted per property key using
+    `resolve_target_class()` (Sub-Task 3, step 1), so the CQL and Gremlin read paths behave identically:
+    `Decimal` → `float` (double) or `str` (string); CQL `Duration` → ISO-8601 `str`; Classic `timedelta` →
+    `int` milliseconds; `Varint` → `str`. With `--decimal-strategy double` (must match the value given to
+    `translate`; `run-all` passes one value to both), a value is *inexact* when `Decimal(repr(float(v))) != v`;
+    the count per key is reported in `stats["lossy_decimals"]` and audited as `LOSSY_DECIMAL`.
+
+12. **Structured values follow the translate strategies.** The migrator writes exactly the keys `translate`
+    created, so it takes the same `--udt-strategy`, `--map-strategy` and `--decimal-strategy` values (shared CLI
+    options; `run-all` passes one value of each to both). A UDT property (`frozen(typeOf('X'))`) is written as
+    `X_<field>` per field (`flat`) or one JSON String `X` (`json`) — Sub-Task 3, step 8; a `tupleOf(...)` value is
+    one JSON array String on the property's key (SC-006); a `mapOf(K,V)` is `<prop>_key`/`<prop>_value` LISTs
+    (`flat`) or one JSON object String (`json`). *Found live:* without this, a UDT or tuple read over CQL (a
+    namedtuple / tuple) was expanded into repeated values of a SINGLE key and silently reduced to its last field.
+
 ### Relevant Context
 - DSG CQL table naming: `<keyspace>.<vertex_label>` for vertices; `<from_label>_<edge_label>_<to_label>` (or the custom `tableName()`) for edges. The `table_name` field in the analysis JSON captures the actual name resolved at analyse time. Source: `dse-docs-new/modules/graph/` CQL hybrid section.
 - JanusGraph Gremlin endpoint: `ws://<host>:8182/gremlin` (confirmed in `janusgraph-dist/src/assembly/static/conf/gremlin-server/gremlin-server-cql-es.yaml`).
@@ -1776,7 +1833,7 @@ Move all vertex and edge data from the DSE Graph cluster to the JanusGraph + HCD
 
 ## Sub-Task 6 — Traversal Validator
 
-**Status:** `[x] done`
+**Status:** `[x] done` — verified live 2026-11-09 against DSE 6.9.26 (Core + Classic) → JanusGraph + HCD 2.0.8 + OpenSearch 3: 100% count match on all 5 graphs; never passes vacuously.
 
 ### Intent
 Run a configurable set of spot-check traversals against both the source DSE Graph and the target JanusGraph, compare results, and report discrepancies.
@@ -1823,7 +1880,7 @@ Run a configurable set of spot-check traversals against both the source DSE Grap
 
 ## Sub-Task 7 — CLI Wrapper and Report Generator
 
-**Status:** `[x] done`
+**Status:** `[x] done` — verified live 2026-11-09 against DSE 6.9.26 (Core + Classic) → JanusGraph + HCD 2.0.8 + OpenSearch 3: every sub-command run; `run-all` via E2E.
 
 ### Intent
 Wire all modules into a cohesive `click`-based CLI with clear command names, help text, and progress output. Generate the final human-readable migration report.
@@ -1920,7 +1977,7 @@ Wire all modules into a cohesive `click`-based CLI with clear command names, hel
 
 ## Sub-Task 8 — Docker / Compose Integration and E2E Test
 
-**Status:** `[x] done`
+**Status:** `[x] done` — verified live 2026-11-09 against DSE 6.9.26 (Core + Classic) → JanusGraph + HCD 2.0.8 + OpenSearch 3 (Podman on Apple Silicon, QEMU): `tests/e2e` 4/4, run twice (idempotent); source switched to DSE 6.9 (rationale in Relevant Context).
 
 ### Intent
 Provide a Docker Compose file that spins up the **exact production-equivalent local stack** — HCD 2.x (IBM Container Registry), OpenSearch 3, JanusGraph, and a DSE Graph source — so the migration tool can be validated end-to-end without any cloud dependency.
@@ -2014,7 +2071,7 @@ docker login cp.icr.io --username cp
        mem_limit: 1536M
        environment:
          - discovery.type=single-node
-         - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Admin_1234!   # OpenSearch 2.12+ requires strong password
+         - DISABLE_INSTALL_DEMO_CONFIG=true   # security disabled below; no admin password needed (none committed)
          - plugins.security.disabled=true                  # Disable security for local dev
          - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
        volumes:
@@ -2069,9 +2126,9 @@ docker login cp.icr.io --username cp
          retries: 6
          start_period: 30s
 
-     # ── SOURCE: DSE Graph 6.8 (Classic + DSG source for migration testing) ──
+     # ── SOURCE: DSE Graph 6.9 (DSG source; 6.8 on native amd64 — see Relevant Context) ──
      dse-graph-source:
-       image: datastax/dse-server:6.8.65-ubi7
+       image: datastax/dse-server:6.9.26-ubi
        container_name: migrator-dse-source
        networks: [migrator-net]
        mem_limit: 2G
@@ -2120,7 +2177,9 @@ docker login cp.icr.io --username cp
    storage.port=9042
    storage.cql.local-datacenter=dc1
    storage.cql.username=cassandra
-   storage.cql.password=cassandra
+   # Never commit a real password. Supply it at deploy time (e.g. templated from $HCD_CQL_PASSWORD);
+   # the E2E compose stack passes it via env var janusgraph.storage.cql.password instead of this file.
+   storage.cql.password=<set-at-deploy-time>
    storage.cql.keyspace=jg_migration_test
    storage.cql.replication-strategy-class=NetworkTopologyStrategy
    storage.cql.replication-strategy-options=dc1,1
@@ -2220,6 +2279,13 @@ docker login cp.icr.io --username cp
 5. **Document Apple Silicon caveat** in a `docker/README.md`:
    > HCD 2.x (`linux/amd64`) runs under Rosetta emulation on Apple M-series chips. Start Docker with at least 8 GB RAM and `rosetta` emulation enabled in Docker Desktop → Settings → Features in Development. Expect ~2× longer startup time vs native `amd64`.
 
+6. **Add `docker/up.sh`** — ordered, health-gated startup (added after live testing: `podman-compose` does
+   not reliably honour `depends_on: condition: service_healthy`, and `up <svc>` also recreates the
+   service's healthy dependencies). It starts each service with `--no-deps` in the §9.4 order
+   (`hcd` → `opensearch` → `janusgraph`; `dse-graph-source` in the background), waits for each healthcheck,
+   skips services that are already healthy, never restarts a service that is still starting, and works with
+   Docker Compose v2 as well. Documented in `docker/README.md`.
+
 ### Relevant Context
 - HCD image: `cp.icr.io/cp/ibm-hyper-converged-database/hcd:2.0.8-ubi` (from `hcd-dev/compose.yaml:3`)
 - HCD Data API image: `cp.icr.io/cp/cpd/ibm-datastax-hcd/data-api:v1.0.53` (optional for this stack — not needed by JanusGraph)
@@ -2227,14 +2293,15 @@ docker login cp.icr.io --username cp
 - OpenSearch image: `opensearchproject/opensearch:3` — requires `plugins.security.disabled=true` for local dev (OpenSearch 2.12+ enforces security by default)
 - JanusGraph Elasticsearch backend is fully OpenSearch-compatible (same REST API); no driver change needed
 - JanusGraph reference compose: `janusgraph/janusgraph-dist/docker/examples/docker-compose-cql-es.yml`
-- DSE 6.8 image: `datastax/dse-server:6.8.65-ubi7` — DSE Graph enabled via `DSE_GRAPH=1` environment variable
+- **Source image switched to DSE 6.9 for the E2E stack** (`datastax/dse-server:6.9.26-ubi`, Java 11). Rationale: on Apple Silicon under QEMU, DSE 6.8's Java 8 JVM wedged at a safepoint on every boot (5 attempts: all logs incl. `gc.log` stop, the JVM ignores `SIGQUIT`, no OOM), while Java 11/17 JVMs (DSE 6.9, HCD) boot normally. Both images remain allowed (AGENTS.md §9.1); 6.8 can be used on a native `amd64` host. See `docs/LEARNINGS.md` §5.
+- DSE 6.8 image: `datastax/dse-server:6.8.65-ubi7` — DSE Graph is enabled by the `-g` start argument (`command: ["-g"]`); the image ignores `DSE_GRAPH=1` (verified live). Add `-s` (DSE Search) to seed templates that use `searchIndex()`
 - DSE 6.9 image: `datastax/dse-server:6.9.26-ubi` (if testing DSG against a 6.9 source)
 
 ---
 
 ## Sub-Task 9 — Sample Workload Seeder
 
-**Status:** `[x] done`
+**Status:** `[x] done` — verified live 2026-11-09 against DSE 6.9.26 (Core + Classic) → JanusGraph + HCD 2.0.8 + OpenSearch 3: all four templates seed exactly `--vertex-count` / `--edge-count` per primary label.
 
 > **⚠️ This sub-task writes data to the source DSE Graph cluster.**
 > It is a **developer / demo utility only** and must never be run against a production DSE cluster.
@@ -2813,16 +2880,17 @@ dse_jg_migrator = ["seed_templates/*.groovy"]
 | `Boolean` | `java.lang.Boolean` | |
 | `Float` | `java.lang.Float` | |
 | `Double` | `java.lang.Double` | |
-| `Decimal` | `java.math.BigDecimal` | |
-| `Varint` | `java.math.BigInteger` | |
+| `Decimal` | `java.lang.Double` (`--decimal-strategy double`, default) or `java.lang.String` (`string`) | JanusGraph has no `BigDecimal` type. `double`: **lossy** beyond ~15 significant digits; inexact values are counted and reported (`LOSSY_DECIMAL`). `string`: exact, but no numeric comparison |
+| `Varint` | `java.lang.String` | JanusGraph rejects `BigInteger`; stored as a decimal string (no numeric comparison) |
 | `Uuid`, `Timeuuid` | `java.util.UUID` | |
 | `Timestamp`, `Instant` | `java.util.Date` | Millisecond precision |
-| `Date` | `java.time.LocalDate` | JanusGraph 1.0+ required |
-| `Time` | `java.time.LocalTime` | JanusGraph 1.0+ required |
-| `Duration` | `java.time.Duration` | |
+| `Date` | `java.util.Date` | JanusGraph rejects `LocalDate` ("Not a supported data type", verified live); stored at midnight UTC |
+| `Time` | `java.lang.String` | JanusGraph rejects `LocalTime`; stored as an ISO-8601 string |
+| `Duration` (Classic) | `java.lang.Long` | Milliseconds — Classic's own storage unit, lossless. `java.time.Duration` is not a documented JanusGraph type |
+| `Duration` (Core / DSG) | `java.lang.String` | ISO-8601 (`P1M2DT3.000000004S`) — CQL `duration` has calendar months/days, so no numeric type is exact; no duration comparison |
 | `Blob` | `byte[]` (use `Byte.class` in JG) | |
-| `Inet` | `java.net.InetAddress` | |
-| `Point` | `java.lang.String` (WKT) + auto `Mapping.PREFIX_TREE` mixed index | Stored as WKT; translator auto-generates geo mixed index; `Geo.within()` works out of the box |
+| `Inet` | `java.lang.String` | JanusGraph rejects `InetAddress`; stored as text |
+| `Point` | `org.janusgraph.core.attribute.Geoshape` + auto `Mapping.PREFIX_TREE` mixed index | Migrator converts DSE WKT via `Geoshape.fromWkt()`; translator auto-generates the geo mixed index. A `String` key cannot take a `PREFIX_TREE` index (verified live) |
 | `Polygon` | `java.lang.String` (WKT) | Stored as WKT; no auto geo index; add `Mapping.PREFIX_TREE` mixed index manually for geo predicates |
 | `Linestring` | `java.lang.String` (WKT) | Stored as WKT; no auto geo index; add `Mapping.PREFIX_TREE` mixed index manually for geo predicates |
 | `setOf(X)` | element `className` with `Cardinality.SET` | Element type resolved individually |
@@ -3061,7 +3129,7 @@ Since Elasticsearch/OpenSearch is **always** co-deployed alongside HCD in this m
 | `SpatialPredicate.geospatialWithinDistance(point, dist)` | `Geo.within(Geoshape.circle(lat, lon, dist))` |
 
 ### E.2 Meta-Properties (Classic only)
-Classic DSE Graph supports meta-properties (properties of properties). JanusGraph supports meta-properties via `VertexProperty` but these are semantically different from DSG collections. The migrator converts meta-properties to a serialised JSON string on the parent property and logs a warning.
+Classic DSE Graph supports meta-properties (properties of properties). JanusGraph supports meta-properties via `VertexProperty` but these are semantically different from DSG collections. The migrator (Classic engine only) converts meta-properties to a serialised JSON string `{"value": ..., "meta": {...}}` on the parent property, logs a warning once per label/property, and writes a `META_PROPERTY_JSON` audit entry.
 
 ### E.3 DSE `mapOf(K, V)` Collections
 JanusGraph has no native map property type. The `--map-strategy` CLI flag selects the approach (default `flat`):
@@ -3082,19 +3150,41 @@ DSE RLAC policies are stored in DSE's internal security tables and cannot be aut
 Spark-based OLAP traversals (`a` traversal source, `GraphComputer`, `GraphFrames`) have no direct equivalent automated migration path. JanusGraph supports `SparkGraphComputer` via TinkerPop's built-in Spark integration, but the Spark job configuration is environment-specific. The tool logs a `SKIPPED_OLAP` entry in the audit log for every OLAP-configured traversal source it detects.
 
 ### E.8 Index Lifecycle in JanusGraph
-After `JsonSchemaInitStrategy` creates indexes, they go through states `INSTALLED → REGISTERED → ENABLED`. Depending on data volume in HCD, enabling indexes may take significant time. The `init-target` command waits up to a configurable timeout (default: 30 minutes) polling index status before proceeding.
+After `JsonSchemaInitStrategy` creates indexes, they go through states `INSTALLED → REGISTERED → ENABLED`. Depending on data volume in HCD, enabling indexes may take significant time. The `init-target` command waits up to a configurable timeout (default: 30 minutes; `--index-timeout <minutes>`) polling index status before proceeding.
 
 ### E.9 DSG Vertex/Edge ID Preservation
 DSG vertex IDs are URI strings (`dseg:/person/uuid`). JanusGraph assigns internal `long` IDs. The migration tool maintains an `id_map` in SQLite during the run. This map is essential for edge migration. After migration, the map is archived to `<graph-name>-id-map.sqlite` for post-migration ID lookups.
 
----
 
+### E.10 Live-Verification Findings (2026-11-09)
+
+Found by running every sub-task against DSE 6.9.26 (Core + Classic) → JanusGraph + HCD 2.0.8 + OpenSearch 3. Each is
+handled in code and covered by a regression unit test; details in `docs/LEARNINGS.md`.
+
+| Area | Finding | Handling |
+|---|---|---|
+| Analyser (ST-2) | Classic `schema.describe()` is a different DSL (double quotes, typed `propertyKey(...)`, `.connection()`, `.index().secondary()/materialized()/search()/outE()`); the Core parser found 0 labels | `Analyser._parse_classic()` (grammar from DSE `dse-graph-api` `describe()`); meta-property indexes are skipped |
+| Translator (ST-3) | Reloading the analysis JSON dropped clustering keys and index direction/order | `AnalysisResult.from_dict()` — exact inverse of `to_dict()` |
+| Translator (ST-3) | A key-less inverse edge MV became a vertex-centric index JanusGraph rejects ("Need to specify sort keys") | Edge MVs keep only edge-property keys; none → no index (IN lookups are native) |
+| Translator / Migrator | UDT and `tupleOf` values were list-expanded into one SINGLE key (silent data loss); the migrator ignored `--udt/--map-strategy` | Sub-Task 5, step 12; shared CLI options |
+| Initialiser (ST-4) | An index over a key committed earlier stays INSTALLED | REGISTER_INDEX → REINDEX (auto-enables); every schema index is watched, so re-runs heal it |
+| Initialiser (ST-4) | Registration also stalls on a stale JanusGraph instance (not shut down cleanly) or a leaked open server transaction | Diagnosed in the error with the documented remedy; never force-closed / rolled back automatically |
+| Initialiser / CLI | `init-target` and `migrate` exited 0 on failure | Non-zero exit |
+| Migrator (ST-5) | gremlin-python packs a plain `int` as int32 (Bigint overflow); CQL maps are `OrderedMapSerializedKey` (not `dict`), whose unflattened bytes the server could not decode — and then never answered | `long` for Long keys / out-of-range ints; `Mapping` check; 120 s request timeout |
+| Migrator (ST-5) | DSE GraphBinary uses types gremlin-python cannot decode (Classic `Timestamp`, Core `Duration`); `elementMap()` keeps one value of a multi-valued Classic property | Source read over GraphSON v3 + `_from_graphson()`; Classic vertices via `valueMap(true)`; Core read over CQL |
+| Migrator (ST-5) | Checkpoint DB defaulted to the CWD, so another run/graph looked already complete; source read failures crashed with a traceback | `<output_dir>/<graph>-migration-checkpoint.db`; source reads retried, then recorded (`SOURCE_READ_FAILED`) |
+| Validator (ST-6) | 0 labels → "0/0 passed"; two failed counts (-1 == -1) matched | Never passes vacuously; a failed count never matches |
+| Seeder (ST-9) | Templates capped edges at the vertex count and never populated sets/maps/Points/UDTs/tuples/posts | Unique-pair generation honours `--edge-count`; all declared types populated |
+| Environment | DSE 6.8 (Java 8) wedged at a JVM safepoint on every boot under QEMU | E2E source switched to DSE 6.9 (Java 11) — Sub-Task 8, Relevant Context |
+| Semantics | DSE Core `listOf` is one list-valued property; JanusGraph LIST cardinality is separate values (`values('roles')` differs) | Data identical; application queries need adjusting (documented) |
 
 ---
 
 ## Appendix F — Compatibility Assessment Rule Catalogue
 
 Complete reference for all rules implemented in `compatibility_rules.py`. Each rule is uniquely identified by its `rule_id` and maps directly to a detection method in `assessor.py`.
+
+**Total: 56 rules** — QP 17, SC 8, IX 8, HC 8, CF 5, TP 5, OL 3, SE 2 (verified against `RULES` in `compatibility_rules.py`; `tests/unit/test_compatibility_rules.py` guards the catalogue).
 
 ### Rule ID Naming Convention
 
