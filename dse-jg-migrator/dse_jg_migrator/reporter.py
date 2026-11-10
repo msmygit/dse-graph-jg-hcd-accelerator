@@ -21,6 +21,7 @@ class Reporter:
     ) -> None:
         self.graph_name = graph_name
         self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
 
     def generate(self, phase_stats: dict[str, Any] | None = None) -> str:
         """Generate the final migration report.

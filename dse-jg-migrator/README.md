@@ -46,7 +46,6 @@ dse-jg-migrator run-all \
   --graph-name food \
   --target-gremlin-url ws://localhost:8182/gremlin \
   --target-cql-host localhost --target-cql-port 9042 \
-  --output-dir ./out \
   --skip-assessment-gate   # the food sample deliberately includes features the assessment flags RED
 ```
 
@@ -95,6 +94,9 @@ that stopped. More detail, including Apple Silicon notes: [`docker/README.md`](d
 
 ## CLI Reference
 
+Every command that writes files puts them in `./out` (change it with `--output-dir`), and the examples below read the
+previous step's files from there, so they can be run one after another. `init-target` only reads its `--schema` file.
+
 ### `seed` — Seed a DSE cluster with a sample workload
 
 ```bash
@@ -116,11 +118,10 @@ dse-jg-migrator assess \
   --source-gremlin-url ws://localhost:8183/gremlin \
   --source-cql-host localhost --source-cql-port 9043 \
   --graph-name food \
-  --target-cql-host localhost --target-cql-port 9042 \
-  --output-dir ./reports
+  --target-cql-host localhost --target-cql-port 9042
 ```
 
-Produces: `food-assessment-report.md`, `food-assessment-report.json`, `food-assessment-report.html`
+Produces: `out/food-assessment-report.md`, `out/food-assessment-report.json`, `out/food-assessment-report.html`
 
 With `--target-cql-host`, the HCD password comes from `HCD_CQL_PASSWORD` (or `--target-cql-password`; user
 `--target-cql-username`, default `cassandra`). There is no built-in default. The HCD pre-flight reports **HC-001**
@@ -135,15 +136,19 @@ dse-jg-migrator analyse \
   --graph-name food
 ```
 
+Produces: `out/food-analysis.json`
+
 ### `translate` — Translate DSE schema to JanusGraph JSON schema
 
 ```bash
 dse-jg-migrator translate \
-  --analysis food-analysis.json \
+  --analysis out/food-analysis.json \
   --udt-strategy flat \
   --map-strategy flat \
   --decimal-strategy double
 ```
+
+Produces: `out/food-janusgraph-schema.json`, `out/food-translation-report.md`
 
 Options: `--udt-strategy flat|json`, `--map-strategy flat|json`, `--decimal-strategy double|string`
 (`double` keeps Decimal numeric and reports inexact values; `string` stores the exact decimal — pass the
@@ -154,7 +159,7 @@ same value to `migrate`).
 ```bash
 dse-jg-migrator init-target \
   --target-gremlin-url ws://localhost:8182/gremlin \
-  --schema food-janusgraph-schema.json \
+  --schema out/food-janusgraph-schema.json \
   --index-timeout 30          # minutes to wait for indexes to be ENABLED (default: 30)
 ```
 
@@ -162,7 +167,7 @@ dse-jg-migrator init-target \
 
 ```bash
 dse-jg-migrator migrate \
-  --analysis food-analysis.json \
+  --analysis out/food-analysis.json \
   --source-gremlin-url ws://localhost:8183/gremlin \
   --target-gremlin-url ws://localhost:8182/gremlin \
   --source-cql-host localhost --source-cql-port 9043 \
@@ -182,7 +187,7 @@ exits 1; re-run the same command to resume — elements already migrated are ski
 
 ```bash
 dse-jg-migrator validate \
-  --analysis food-analysis.json \
+  --analysis out/food-analysis.json \
   --source-gremlin-url ws://localhost:8183/gremlin \
   --target-gremlin-url ws://localhost:8182/gremlin
 ```

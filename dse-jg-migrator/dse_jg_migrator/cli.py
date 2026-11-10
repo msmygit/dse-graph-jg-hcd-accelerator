@@ -72,6 +72,13 @@ def _load_assessment_risk(json_path: str) -> str:
 _CONNECTION_ERROR_NAMES = {"ClientConnectionError", "WSServerHandshakeError", "NoHostAvailable", "OperationTimedOut"}
 STACK_HINT = "Is the stack running and healthy? Start it with ./docker/up.sh — it waits until every service is healthy."
 
+# Every command that writes files writes them here; `run-all` and the individual commands share one default, so the
+# files of one step are where the next step's README example reads them.
+DEFAULT_OUTPUT_DIR = "out"
+_output_dir_option = click.option(
+    "--output-dir", default=DEFAULT_OUTPUT_DIR, show_default=True, help="Directory for reports and intermediate files."
+)
+
 # HCD credentials come from the environment (or the flag) — never a built-in default (AGENTS.md §6.2).
 _target_cql_username_option = click.option(
     "--target-cql-username", envvar="HCD_CQL_USERNAME", default="cassandra", show_default=True
@@ -242,7 +249,7 @@ def seed(
 @click.option("--source-cql-host", required=True, help="CQL host of the source DSE cluster.")
 @click.option("--source-cql-port", default=9042, show_default=True)
 @click.option("--graph-name", required=True)
-@click.option("--output-dir", default=".", show_default=True)
+@_output_dir_option
 @click.option(
     "--target-cql-host",
     default=None,
@@ -381,7 +388,7 @@ def assess(
 @click.option("--source-cql-host", required=True)
 @click.option("--source-cql-port", default=9042, show_default=True)
 @click.option("--graph-name", required=True)
-@click.option("--output-dir", default=".", show_default=True)
+@_output_dir_option
 @click.option("--username", default=None)
 @click.option("--password", default=None, hide_input=True)
 def analyse(
@@ -434,7 +441,7 @@ def analyse(
 @udt_strategy_option
 @map_strategy_option
 @decimal_strategy_option
-@click.option("--output-dir", default=".", show_default=True)
+@_output_dir_option
 def translate(
     analysis_path: str,
     udt_strategy: str,
@@ -554,7 +561,7 @@ def init_target(
 @udt_strategy_option
 @map_strategy_option
 @decimal_strategy_option
-@click.option("--output-dir", default=".", show_default=True)
+@_output_dir_option
 def migrate(
     analysis_path: str,
     source_gremlin_url: str,
@@ -635,7 +642,7 @@ def migrate(
 @click.option("--source-gremlin-url", required=True)
 @click.option("--target-gremlin-url", required=True)
 @click.option("--validation-queries", "queries_path", default=None, type=click.Path())
-@click.option("--output-dir", default=".", show_default=True)
+@_output_dir_option
 def validate(
     analysis_path: str,
     source_gremlin_url: str,
@@ -679,7 +686,7 @@ def validate(
 
 @main.command()
 @click.option("--graph-name", required=True)
-@click.option("--output-dir", default=".", show_default=True)
+@_output_dir_option
 def report(graph_name: str, output_dir: str) -> None:
     """Generate the final migration summary report."""
     from dse_jg_migrator.reporter import Reporter
@@ -704,7 +711,7 @@ def report(graph_name: str, output_dir: str) -> None:
 @click.option("--target-cql-port", default=9042, show_default=True)
 @_target_cql_username_option
 @_target_cql_password_option
-@click.option("--output-dir", default=".", show_default=True)
+@_output_dir_option
 @click.option("--analyze-only", is_flag=True, default=False, help="Run only assessment and analysis phases, then exit.")
 @click.option(
     "--skip-assessment-gate", is_flag=True, default=False, help="Proceed even if assessment risk is HIGH or CRITICAL."

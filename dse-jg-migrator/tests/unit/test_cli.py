@@ -473,3 +473,18 @@ def test_seed_prints_counted_totals_or_the_requested_sizes(runner: CliRunner) ->
         seeder_cls.return_value.run.return_value = SeederResult("food", "food", 100, 200, "next")
         res = runner.invoke(main, ["seed", "--source-gremlin-url", GREMLIN, "--template", "food", "--confirm"])
     assert "Requested 100 vertices / 200 edges per primary label" in " ".join(res.output.split())
+
+
+@pytest.mark.parametrize("command", ["assess", "analyse", "translate", "migrate", "validate", "report", "run-all"])
+def test_every_writing_command_defaults_to_the_out_directory(command: str) -> None:
+    """Live finding: run individually, every command wrote to ./ (default "."), while the quick start used ./out."""
+    (option,) = [p for p in main.commands[command].params if p.name == "output_dir"]
+    assert option.default == "out"
+
+
+def test_report_without_output_dir_writes_into_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    res = CliRunner().invoke(main, ["report", "--graph-name", "food"])
+    assert res.exit_code == 0, res.output
+    assert (tmp_path / "out" / "food-migration-report.md").exists()
+    assert not (tmp_path / "food-migration-report.md").exists()
