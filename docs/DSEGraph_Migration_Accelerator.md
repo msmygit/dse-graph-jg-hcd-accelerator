@@ -873,7 +873,7 @@ Schema 1.1 (#8) adds `index_analysis` and the computed `cluster_overview` keys s
               help='CQL host of the source DSE cluster.')
 @click.option('--source-cql-port',    default=9042, show_default=True)
 @click.option('--graph-name',         required=True)
-@click.option('--output-dir',         default='.', show_default=True)
+@click.option('--output-dir',         default='out', show_default=True)  # shared by every writing command (#9)
 # ── Target HCD pre-flight (optional but recommended) ────────────────────────
 @click.option('--target-cql-host', default=None,
               help='CQL host of the target HCD cluster. When provided, runs HCD pre-flight '
@@ -1950,7 +1950,7 @@ Wire all modules into a cohesive `click`-based CLI with clear command names, hel
    @click.option('--source-gremlin-url', required=True)
    @click.option('--source-cql-host', required=True)
    @click.option('--graph-name', required=True)
-   @click.option('--output-dir', default='.')
+   @_output_dir_option  # --output-dir, default "out" — one definition shared by every command that writes files
    def analyse(source_gremlin_url, source_cql_host, graph_name, output_dir):
        """Analyse DSE Graph cluster and extract schema."""
        ...
@@ -3299,6 +3299,7 @@ handled in code and covered by a regression unit test; details in `docs/LEARNING
 | Seeder (ST-9) | Templates capped edges at the vertex count and never populated sets/maps/Points/UDTs/tuples/posts | Unique-pair generation honours `--edge-count`; all declared types populated |
 | Environment | DSE 6.8 (Java 8) wedged at a JVM safepoint on every boot under QEMU | E2E source switched to DSE 6.9 (Java 11) — Sub-Task 8, Relevant Context |
 | Semantics | DSE Core `listOf` is one list-valued property; JanusGraph LIST cardinality is separate values (`values('roles')` differs) | Data identical; application queries need adjusting (documented) |
+| CLI (ST-7) | Every command defaulted `--output-dir` to `.`, so commands run one by one wrote to the working directory while `run-all` (README: `--output-dir ./out`) wrote to `./out` | One shared `--output-dir` option, default `out`; `migrate` and `report` create it like the other modules (#9) |
 | Assessor (ST-0) | The report never said which DSE indexes need OpenSearch / Elasticsearch; the cluster overview was JSON-only, its schema mode always "Unknown" (a regex used as plain text) and OLAP always off | Index Analysis and Cluster Overview from `parse_schema()` + `Translator.translate()` (#8; Step 0.3) |
 | Semantics | A DSE search key without `asText()`/`asString()` on a Text property is indexed both ways; the translator gives it JanusGraph's default TEXT mapping, so whole-value predicates (`Search.prefix()`, `regex()`) are not served | Flagged in the Index Analysis (set `Mapping.TEXTSTRING`); not yet translated automatically |
 

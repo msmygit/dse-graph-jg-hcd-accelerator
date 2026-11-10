@@ -61,6 +61,7 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) forma
 
 ### Changed
 
+- `--output-dir` defaults to `out` for every command that writes files (`assess`, `analyse`, `translate`, `migrate`, `validate`, `report`, `run-all`; was `.`), defined once in `cli.py`. Run one by one, the commands wrote their reports, checkpoint and intermediate files into the working directory, while the quick start's `run-all` wrote to `./out`. `migrate` and `report` now create the directory like the other commands. README examples read their inputs from `out/`. (#9)
 - `assess`/`run-all`: `--target-cql-password` reads `HCD_CQL_PASSWORD` (was a `cassandra` default) and `--target-cql-username` reads `HCD_CQL_USERNAME`; a `--target-cql-host` without a password stops with a hint. `config.py` and `Assessor` no longer default the password to `cassandra`. (#4)
 - `up.sh`: `--reset-target` always authenticates; a container that cannot replay its commit log is reported with the exact volume and `./docker/up.sh --clean` (was `down -v`, which misses volumes of other compose projects). (#4)
 - `tests/e2e` requires `HCD_CQL_PASSWORD`. (#4)

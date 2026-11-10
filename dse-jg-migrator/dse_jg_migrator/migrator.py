@@ -154,6 +154,7 @@ class Migrator:
         self.checkpoint_db = checkpoint_db or os.path.join(output_dir, f"{analysis.graph_name}-migration-checkpoint.db")
         self.audit_log = audit_log or f"{analysis.graph_name}-migration-audit.jsonl"
         self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)  # the checkpoint DB and audit log live here
         self._meta_warned: set[tuple[str, str]] = set()
         # The three strategies must match the values given to `translate`: the migrator writes the keys it created.
         self.decimal_strategy = decimal_strategy
