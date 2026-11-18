@@ -201,3 +201,32 @@ def test_analysis_result_round_trips_through_json() -> None:
         config=GraphConfig(schema_mode="Production", olap_enabled=True),
     )
     assert AnalysisResult.from_dict(json.loads(json.dumps(an.to_dict()))) == an
+
+
+# ---------------------------------------------------------------------------
+# ClusterAuth
+# ---------------------------------------------------------------------------
+
+
+def test_cluster_auth_hides_the_password_and_defaults_to_anonymous_plain_text() -> None:
+    from dse_jg_migrator.models import ClusterAuth
+
+    dummy = "s3cret"  # a test value, not a credential  # pragma: allowlist secret
+    auth = ClusterAuth(username="reader", password=dummy)
+    assert dummy not in repr(auth)
+    assert ClusterAuth().gremlin_kwargs() == {} and ClusterAuth().cql_kwargs() == {}
+    assert auth.gremlin_kwargs() == {"username": "reader", "password": dummy}
+    assert auth.cql_kwargs() == {"username": "reader", "password": dummy}
+
+
+def test_cluster_auth_tls_contexts_verify_with_the_given_ca() -> None:
+    from unittest.mock import patch
+
+    from dse_jg_migrator.models import ClusterAuth
+
+    with patch("ssl.create_default_context") as create:
+        assert "ssl_context" not in ClusterAuth(cql_ssl=True).gremlin_kwargs()  # wss:// uses the system store
+        assert ClusterAuth(cql_ssl=True).cql_kwargs()["ssl_context"] is create.return_value
+        assert "ssl_context" not in ClusterAuth(ca_cert="ca.pem").cql_kwargs()  # CQL TLS needs --source-cql-ssl
+        assert ClusterAuth(ca_cert="ca.pem").gremlin_kwargs()["ssl_context"] is create.return_value
+    assert [c.kwargs["cafile"] for c in create.call_args_list] == [None, "ca.pem"]

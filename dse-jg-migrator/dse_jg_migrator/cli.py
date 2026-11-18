@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from typing import Any
 
 import click
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn
 
-from dse_jg_migrator.models import UserFacingError
+from dse_jg_migrator.models import ClusterAuth, UserFacingError
 
 console = Console()
 
@@ -71,6 +72,12 @@ def _load_assessment_risk(json_path: str) -> str:
 # aiohttp / cassandra-driver at start-up).
 _CONNECTION_ERROR_NAMES = {"ClientConnectionError", "WSServerHandshakeError", "NoHostAvailable", "OperationTimedOut"}
 STACK_HINT = "Is the stack running and healthy? Start it with ./docker/up.sh — it waits until every service is healthy."
+AUTH_HINT = (
+    "The server requires (other) credentials: set DSE_USERNAME / DSE_PASSWORD (or --source-username / "
+    "--source-password) for the DSE source, HCD_CQL_USERNAME / HCD_CQL_PASSWORD for HCD."
+)
+# How gremlin-python (DSE / JanusGraph) and cassandra-driver word a missing or rejected login (seen live).
+_AUTH_ERROR_MARKERS = ("requires authentication", "failed to login", "authenticationfailed", "bad credentials")
 
 # Every command that writes files writes them here; `run-all` and the individual commands share one default, so the
 # files of one step are where the next step's README example reads them.
@@ -89,6 +96,62 @@ _target_cql_password_option = click.option(
     default=None,
     help="Password for --target-cql-username. Defaults to $HCD_CQL_PASSWORD.",
 )
+
+
+# Source DSE credentials and TLS, shared by every command that connects to the source. Credentials come from the
+# environment (DSE_USERNAME / DSE_PASSWORD) or the flags; the old --username / --password names still work.
+_SOURCE_AUTH_OPTIONS = (
+    click.option(
+        "--source-username",
+        "--username",
+        "source_username",
+        envvar="DSE_USERNAME",
+        default=None,
+        help="DSE user for Gremlin and CQL (needs SELECT on the graph keyspace). Defaults to $DSE_USERNAME.",
+    ),
+    click.option(
+        "--source-password",
+        "--password",
+        "source_password",
+        envvar="DSE_PASSWORD",
+        default=None,
+        help="Password for --source-username. Defaults to $DSE_PASSWORD (prefer it: flags show in shell history).",
+    ),
+    click.option(
+        "--source-cql-ssl", is_flag=True, default=False, help="Use TLS for the source CQL connection (client-to-node)."
+    ),
+    click.option(
+        "--source-ca-cert",
+        type=click.Path(exists=True, dir_okay=False),
+        default=None,
+        help="PEM CA certificate that verifies the source's TLS (CQL with --source-cql-ssl, and wss:// Gremlin). "
+        "Without it the system trust store is used.",
+    ),
+)
+
+
+def _source_auth_options(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Add ``--source-username``, ``--source-password``, ``--source-cql-ssl`` and ``--source-ca-cert``."""
+    for option in reversed(_SOURCE_AUTH_OPTIONS):
+        func = option(func)
+    return func
+
+
+def _source_auth(
+    source_username: str | None,
+    source_password: str | None,
+    source_cql_ssl: bool,
+    source_ca_cert: str | None,
+) -> ClusterAuth:
+    """Build the source ``ClusterAuth``; a user without a password (or the reverse) is a mistake, not anonymous."""
+    if bool(source_username) != bool(source_password):
+        raise UserFacingError(
+            "Set both the DSE user and password (--source-username / --source-password, or DSE_USERNAME / "
+            "DSE_PASSWORD), or neither for a cluster without authentication."
+        )
+    return ClusterAuth(
+        username=source_username, password=source_password, cql_ssl=source_cql_ssl, ca_cert=source_ca_cert
+    )
 
 
 def _require_target_password(target_cql_host: str | None, target_cql_password: str | None) -> str:
@@ -120,7 +183,8 @@ class _CliGroup(click.Group):
         except Exception as exc:
             if _is_connection_error(exc):
                 console.print(f"[red]✗[/red] Cannot connect: {exc}")
-                console.print(f"  {STACK_HINT}")
+                is_auth = any(marker in str(exc).lower() for marker in _AUTH_ERROR_MARKERS)
+                console.print(f"  {AUTH_HINT if is_auth else STACK_HINT}")
             elif isinstance(exc, UserFacingError):  # e.g. unknown graph, a seed statement DSE rejected
                 console.print(f"[red]✗[/red] {exc}")
             else:
@@ -291,8 +355,7 @@ def seed(
     default="all",
     show_default=True,
 )
-@click.option("--username", default=None, help="DSE source authentication username.")
-@click.option("--password", default=None, hide_input=True, help="DSE source authentication password.")
+@_source_auth_options
 @click.option(
     "--skip-assessment-gate", is_flag=True, default=False, help="Do not exit non-zero when risk is HIGH or CRITICAL."
 )
@@ -309,8 +372,10 @@ def assess(
     output_formats: tuple[str, ...],
     filter_category: str,
     filter_severity: str,
-    username: str | None,
-    password: str | None,
+    source_username: str | None,
+    source_password: str | None,
+    source_cql_ssl: bool,
+    source_ca_cert: str | None,
     skip_assessment_gate: bool,
 ) -> None:
     """Run a read-only pre-migration compatibility assessment.
@@ -348,8 +413,7 @@ def assess(
         target_cql_port=target_cql_port,
         target_cql_username=target_cql_username,
         target_cql_password=_require_target_password(target_cql_host, target_cql_password),
-        username=username,
-        password=password,
+        source_auth=_source_auth(source_username, source_password, source_cql_ssl, source_ca_cert),
     )
     console.print(f"[bold]Assessing graph:[/bold] {graph_name} at {source_gremlin_url}")
     with console.status("Running compatibility assessment (read-only)..."):
@@ -389,16 +453,17 @@ def assess(
 @click.option("--source-cql-port", default=9042, show_default=True)
 @click.option("--graph-name", required=True)
 @_output_dir_option
-@click.option("--username", default=None)
-@click.option("--password", default=None, hide_input=True)
+@_source_auth_options
 def analyse(
     source_gremlin_url: str,
     source_cql_host: str,
     source_cql_port: int,
     graph_name: str,
     output_dir: str,
-    username: str | None,
-    password: str | None,
+    source_username: str | None,
+    source_password: str | None,
+    source_cql_ssl: bool,
+    source_ca_cert: str | None,
 ) -> None:
     """Analyse DSE Graph cluster and extract schema to JSON."""
     from dse_jg_migrator.analyser import Analyser
@@ -408,8 +473,7 @@ def analyse(
         cql_host=source_cql_host,
         cql_port=source_cql_port,
         graph_name=graph_name,
-        username=username,
-        password=password,
+        source_auth=_source_auth(source_username, source_password, source_cql_ssl, source_ca_cert),
         output_dir=output_dir,
     )
     console.print(f"[bold]Analysing graph:[/bold] {graph_name}")
@@ -553,7 +617,8 @@ def init_target(
 @click.option("--source-gremlin-url", required=True)
 @click.option("--target-gremlin-url", required=True)
 @click.option("--source-cql-host", default="")
-@click.option("--source-cql-port", default=9043, show_default=True)
+@click.option("--source-cql-port", default=9042, show_default=True)
+@_source_auth_options
 @click.option("--cql-fetch-size", default=1000, show_default=True)
 @click.option("--gremlin-batch", default=200, show_default=True)
 @click.option("--write-batch", default=100, show_default=True)
@@ -568,6 +633,10 @@ def migrate(
     target_gremlin_url: str,
     source_cql_host: str,
     source_cql_port: int,
+    source_username: str | None,
+    source_password: str | None,
+    source_cql_ssl: bool,
+    source_ca_cert: str | None,
     cql_fetch_size: int,
     gremlin_batch: int,
     write_batch: int,
@@ -594,6 +663,7 @@ def migrate(
         target_gremlin_url=target_gremlin_url,
         source_cql_host=source_cql_host,
         source_cql_port=source_cql_port,
+        source_auth=_source_auth(source_username, source_password, source_cql_ssl, source_ca_cert),
         cql_fetch_size=cql_fetch_size,
         gremlin_batch=gremlin_batch,
         write_batch=write_batch,
@@ -643,12 +713,17 @@ def migrate(
 @click.option("--target-gremlin-url", required=True)
 @click.option("--validation-queries", "queries_path", default=None, type=click.Path())
 @_output_dir_option
+@_source_auth_options
 def validate(
     analysis_path: str,
     source_gremlin_url: str,
     target_gremlin_url: str,
     queries_path: str | None,
     output_dir: str,
+    source_username: str | None,
+    source_password: str | None,
+    source_cql_ssl: bool,
+    source_ca_cert: str | None,
 ) -> None:
     """Compare source and target vertex/edge counts and run smoke tests."""
     from dse_jg_migrator.translator import Translator
@@ -661,6 +736,7 @@ def validate(
         analysis=analysis,
         source_gremlin_url=source_gremlin_url,
         target_gremlin_url=target_gremlin_url,
+        source_auth=_source_auth(source_username, source_password, source_cql_ssl, source_ca_cert),
         validation_queries_path=queries_path,
         output_dir=output_dir,
     )
@@ -734,6 +810,7 @@ def report(graph_name: str, output_dir: str) -> None:
 @decimal_strategy_option
 @click.option("--cql-fetch-size", default=1000, show_default=True)
 @click.option("--write-batch", default=100, show_default=True)
+@_source_auth_options
 @click.pass_context
 def run_all(  # noqa: PLR0913
     ctx: click.Context,
@@ -756,6 +833,10 @@ def run_all(  # noqa: PLR0913
     decimal_strategy: str,
     cql_fetch_size: int,
     write_batch: int,
+    source_username: str | None,
+    source_password: str | None,
+    source_cql_ssl: bool,
+    source_ca_cert: str | None,
 ) -> None:
     """Run the full migration pipeline.
 
@@ -767,6 +848,7 @@ def run_all(  # noqa: PLR0913
       dse-jg-migrator run-all --seed --template food --analyze-only ...
     """
     target_cql_password = _require_target_password(target_cql_host, target_cql_password)  # fail before seeding
+    _source_auth(source_username, source_password, source_cql_ssl, source_ca_cert)  # likewise
     os.makedirs(output_dir, exist_ok=True)
     analysis_path = os.path.join(output_dir, f"{graph_name}-analysis.json")
     schema_path = os.path.join(output_dir, f"{graph_name}-janusgraph-schema.json")
@@ -798,8 +880,10 @@ def run_all(  # noqa: PLR0913
         output_formats=("all",),
         filter_category="all",
         filter_severity="all",
-        username=None,
-        password=None,
+        source_username=source_username,
+        source_password=source_password,
+        source_cql_ssl=source_cql_ssl,
+        source_ca_cert=source_ca_cert,
         skip_assessment_gate=skip_assessment_gate,
     )
 
@@ -825,8 +909,10 @@ def run_all(  # noqa: PLR0913
         source_cql_port=source_cql_port,
         graph_name=graph_name,
         output_dir=output_dir,
-        username=None,
-        password=None,
+        source_username=source_username,
+        source_password=source_password,
+        source_cql_ssl=source_cql_ssl,
+        source_ca_cert=source_ca_cert,
     )
 
     # 2. Translate
@@ -858,6 +944,10 @@ def run_all(  # noqa: PLR0913
         target_gremlin_url=target_gremlin_url,
         source_cql_host=source_cql_host,
         source_cql_port=source_cql_port,
+        source_username=source_username,
+        source_password=source_password,
+        source_cql_ssl=source_cql_ssl,
+        source_ca_cert=source_ca_cert,
         cql_fetch_size=cql_fetch_size,
         gremlin_batch=200,
         write_batch=write_batch,
@@ -876,6 +966,10 @@ def run_all(  # noqa: PLR0913
         target_gremlin_url=target_gremlin_url,
         queries_path=None,
         output_dir=output_dir,
+        source_username=source_username,
+        source_password=source_password,
+        source_cql_ssl=source_cql_ssl,
+        source_ca_cert=source_ca_cert,
     )
 
     # 6. Report

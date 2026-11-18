@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -34,7 +34,9 @@ def test_successful_connect_keeps_transport_open() -> None:
 def test_open_gremlin_client_uses_closing_transport_and_passes_kwargs() -> None:
     with patch("gremlin_python.driver.client.Client") as client_cls:
         open_gremlin_client("ws://h/gremlin", "food.g", username="u")
-    client_cls.assert_called_once_with("ws://h/gremlin", "food.g", transport_factory=_closing_transport, username="u")
+    client_cls.assert_called_once_with("ws://h/gremlin", "food.g", transport_factory=ANY, username="u")
+    factory = client_cls.call_args.kwargs["transport_factory"]
+    assert factory.func is _closing_transport and factory.args == (None,)  # no CA: the system trust store
 
 
 def test_quiet_gremlin_errors_mutes_only_inside_and_restores(caplog: pytest.LogCaptureFixture) -> None:
@@ -47,3 +49,11 @@ def test_quiet_gremlin_errors_mutes_only_inside_and_restores(caplog: pytest.LogC
     messages = [r.getMessage() for r in caplog.records]
     assert messages == ["Received error message 'real'"]
     assert log.disabled is False
+
+
+def test_ca_cert_context_reaches_the_aiohttp_transport() -> None:
+    """A wss:// server with a private CA: the SSL context must reach aiohttp (``ssl_options`` → ``ssl``)."""
+    ctx = object()
+    with patch(TRANSPORT) as transport_cls:
+        _closing_transport(ctx)  # type: ignore[arg-type]
+    transport_cls.assert_called_once_with(ssl_options=ctx)

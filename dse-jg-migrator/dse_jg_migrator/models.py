@@ -3,8 +3,52 @@
 
 from __future__ import annotations
 
+import ssl
 from dataclasses import dataclass, field
 from typing import Any, cast
+
+# ---------------------------------------------------------------------------
+# Connection security (used by gremlin_io / cql_io callers)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ClusterAuth:
+    """Credentials and TLS for one cluster's Gremlin and CQL endpoints. The password is never printed (``repr``).
+
+    ``cql_ssl`` turns on TLS for CQL; Gremlin uses TLS when its URL is ``wss://``. ``ca_cert`` is a PEM file that
+    verifies both instead of the system trust store (a private CA).
+    """
+
+    username: str | None = None
+    password: str | None = field(default=None, repr=False)
+    cql_ssl: bool = False
+    ca_cert: str | None = None
+
+    def _ssl_context(self) -> ssl.SSLContext:
+        """A verifying TLS context: the hostname and certificate are always checked."""
+        return ssl.create_default_context(cafile=self.ca_cert)
+
+    def gremlin_kwargs(self) -> dict[str, Any]:  # noqa: ANN401 — gremlin-python Client keyword arguments
+        """Keyword arguments for ``gremlin_io.open_gremlin_client``: SASL PLAIN credentials and the CA, when set."""
+        kwargs: dict[str, Any] = {}
+        if self.username:
+            kwargs["username"] = self.username
+            kwargs["password"] = self.password or ""
+        if self.ca_cert:
+            kwargs["ssl_context"] = self._ssl_context()
+        return kwargs
+
+    def cql_kwargs(self) -> dict[str, Any]:  # noqa: ANN401 — cassandra-driver Cluster keyword arguments
+        """Keyword arguments for ``cql_io.open_cql_cluster``: password authentication and TLS, when set."""
+        kwargs: dict[str, Any] = {}
+        if self.username:
+            kwargs["username"] = self.username
+            kwargs["password"] = self.password or ""
+        if self.cql_ssl:
+            kwargs["ssl_context"] = self._ssl_context()
+        return kwargs
+
 
 # ---------------------------------------------------------------------------
 # Schema models (populated by analyser.py)

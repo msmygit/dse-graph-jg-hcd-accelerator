@@ -121,7 +121,8 @@ dse-jg-migrator/
 │   ├── reporter.py
 │   ├── models.py
 │   ├── config.py
-│   └── gremlin_io.py             # the one place Gremlin clients are opened
+│   ├── gremlin_io.py             # the one place Gremlin clients are opened
+│   └── cql_io.py                 # the one place CQL clusters are opened (auth + TLS)
 ├── tests/
 │   ├── unit/
 │   │   ├── test_assessor.py
@@ -133,6 +134,7 @@ dse-jg-migrator/
 │   │   ├── test_migrator.py
 │   │   ├── test_validator.py
 │   │   ├── test_gremlin_io.py
+│   │   ├── test_cql_io.py
 │   │   └── test_models.py
 │   ├── fixtures/                 # Canned schema.describe() outputs, mock JSON, etc.
 │   └── e2e/

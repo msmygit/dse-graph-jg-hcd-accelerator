@@ -6,14 +6,16 @@ Every module opens its Gremlin clients through :func:`open_gremlin_client`, so c
 from __future__ import annotations
 
 import logging
+import ssl
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from functools import partial
 from typing import Any
 
 _GREMLIN_LOGGER = "gremlinpython"
 
 
-def _closing_transport() -> Any:  # noqa: ANN401 — gremlin-python's transport classes are untyped
+def _closing_transport(ssl_context: ssl.SSLContext | None = None) -> Any:  # noqa: ANN401 — untyped transport
     """Return an ``AiohttpTransport`` that releases its event loop and session when its connect fails.
 
     gremlin-python orphans the transport of a failed connect; garbage collection later runs its ``close()`` while
@@ -22,7 +24,7 @@ def _closing_transport() -> Any:  # noqa: ANN401 — gremlin-python's transport 
     """
     from gremlin_python.driver.aiohttp.transport import AiohttpTransport
 
-    transport = AiohttpTransport()
+    transport = AiohttpTransport(**({"ssl_options": ssl_context} if ssl_context is not None else {}))
     connect: Callable[..., None] = transport.connect
 
     def connect_or_close(url: str, headers: dict[str, str] | None = None) -> None:
@@ -36,14 +38,23 @@ def _closing_transport() -> Any:  # noqa: ANN401 — gremlin-python's transport 
     return transport
 
 
-def open_gremlin_client(url: str, traversal_source: str, **kwargs: Any) -> Any:  # noqa: ANN401 — untyped driver
+def open_gremlin_client(
+    url: str,
+    traversal_source: str,
+    ssl_context: ssl.SSLContext | None = None,
+    **kwargs: Any,  # noqa: ANN401 — untyped driver
+) -> Any:  # noqa: ANN401 — untyped driver
     """Open a gremlin-python ``Client``; ``kwargs`` go to ``Client`` (username, password, message_serializer).
 
+    ``ssl_context`` verifies a ``wss://`` server against a private CA; without it ``wss://`` uses the system trust
+    store. Credentials are sent with SASL PLAIN, which DSE's and JanusGraph's authenticators accept.
     Raises whatever the driver raises when the server cannot be reached; nothing is left to clean up afterwards.
     """
     from gremlin_python.driver import client as gremlin_client
 
-    return gremlin_client.Client(url, traversal_source, transport_factory=_closing_transport, **kwargs)
+    return gremlin_client.Client(
+        url, traversal_source, transport_factory=partial(_closing_transport, ssl_context), **kwargs
+    )
 
 
 @contextmanager

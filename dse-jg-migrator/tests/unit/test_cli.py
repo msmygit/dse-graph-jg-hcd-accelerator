@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -14,6 +15,7 @@ from dse_jg_migrator.models import (
     AnalysisResult,
     AssessmentFinding,
     AssessmentResult,
+    ClusterAuth,
     EdgeLabelDefinition,
     SeederResult,
     VertexLabelDefinition,
@@ -374,7 +376,8 @@ def test_run_all_blocks_on_high_risk(runner: CliRunner, tmp_path: Path) -> None:
     assert res.exit_code == 1
 
 
-def test_run_all_full_pipeline_with_seed(runner: CliRunner, tmp_path: Path) -> None:
+def _run_full_pipeline(runner: CliRunner, tmp_path: Path, *extra: str) -> tuple[object, dict[str, MagicMock]]:
+    """Run ``run-all`` with every backend mocked; return the result and the mocked classes by name."""
     an = AnalysisResult(graph_name="food", engine="dsg", extracted_at="t")
     an.vertex_labels.append(VertexLabelDefinition(label="person"))
 
@@ -382,28 +385,82 @@ def test_run_all_full_pipeline_with_seed(runner: CliRunner, tmp_path: Path) -> N
         (tmp_path / "food-analysis.json").write_text(json.dumps(an.to_dict()), encoding="utf-8")
         return an
 
-    with (
-        patch("dse_jg_migrator.seeder.Seeder") as seeder_cls,
-        patch("dse_jg_migrator.assessor.Assessor") as assessor_cls,
-        patch("dse_jg_migrator.analyser.Analyser") as analyser_cls,
-        patch("dse_jg_migrator.initialiser.Initialiser") as init_cls,
-        patch("dse_jg_migrator.migrator.Migrator") as mig_cls,
-        patch("dse_jg_migrator.validator.Validator") as val_cls,
-    ):
-        seeder_cls.return_value.run.return_value = SeederResult("food", "food", 1, 1, "n")
-        assessor_cls.return_value.run.return_value = _assessment("LOW")
-        analyser_cls.return_value.run.side_effect = fake_analyser_run
-        init_cls.return_value.run.return_value = {"created": ["x"], "errors": []}
-        mig_cls.return_value.run.return_value = {"vertices": {"person": 1}, "edges": {}}
-        val_cls.return_value.run.return_value = {"overall_pass": True, "count_results": [{"match": True}]}
-        res = runner.invoke(main, [*RUN_ALL, "--output-dir", str(tmp_path), "--seed"])
+    names = ("seeder.Seeder", "assessor.Assessor", "analyser.Analyser", "initialiser.Initialiser", "migrator.Migrator")
+    with ExitStack() as stack:
+        mocks = {n.split(".")[1]: stack.enter_context(patch(f"dse_jg_migrator.{n}")) for n in names}
+        mocks["Validator"] = stack.enter_context(patch("dse_jg_migrator.validator.Validator"))
+        mocks["Seeder"].return_value.run.return_value = SeederResult("food", "food", 1, 1, "n")
+        mocks["Assessor"].return_value.run.return_value = _assessment("LOW")
+        mocks["Analyser"].return_value.run.side_effect = fake_analyser_run
+        mocks["Initialiser"].return_value.run.return_value = {"created": ["x"], "errors": []}
+        mocks["Migrator"].return_value.run.return_value = {"vertices": {"person": 1}, "edges": {}}
+        mocks["Validator"].return_value.run.return_value = {"overall_pass": True, "count_results": [{"match": True}]}
+        res = runner.invoke(main, [*RUN_ALL, "--output-dir", str(tmp_path), *extra])
+    return res, mocks
 
-    assert res.exit_code == 0, res.output
-    assert "Migration pipeline complete" in res.output
-    seeder_cls.return_value.run.assert_called_once()
-    init_cls.assert_called_once()
-    assert init_cls.call_args.kwargs["index_timeout_s"] == 1800
+
+def test_run_all_full_pipeline_with_seed(runner: CliRunner, tmp_path: Path) -> None:
+    res, mocks = _run_full_pipeline(runner, tmp_path, "--seed")
+    assert res.exit_code == 0, res.output  # type: ignore[attr-defined]
+    assert "Migration pipeline complete" in res.output  # type: ignore[attr-defined]
+    mocks["Seeder"].return_value.run.assert_called_once()
+    mocks["Initialiser"].assert_called_once()
+    assert mocks["Initialiser"].call_args.kwargs["index_timeout_s"] == 1800
     assert (tmp_path / "food-migration-report.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Source DSE credentials and TLS (live finding: migrate/validate had no source credentials at all)
+# ---------------------------------------------------------------------------
+
+DUMMY_PW = "from-env"  # a test value, not a credential  # pragma: allowlist secret
+
+
+def test_run_all_passes_source_credentials_from_the_environment_to_every_stage(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DSE_USERNAME", "reader")
+    monkeypatch.setenv("DSE_PASSWORD", DUMMY_PW)
+    res, mocks = _run_full_pipeline(runner, tmp_path, "--source-cql-ssl")
+    assert res.exit_code == 0, res.output  # type: ignore[attr-defined]
+    expected = ClusterAuth(username="reader", password=DUMMY_PW, cql_ssl=True)
+    for stage in ("Assessor", "Analyser", "Migrator", "Validator"):
+        assert mocks[stage].call_args.kwargs["source_auth"] == expected, stage
+
+
+def test_old_username_and_password_flags_still_work(runner: CliRunner, tmp_path: Path) -> None:
+    with patch("dse_jg_migrator.assessor.Assessor") as assessor_cls:
+        assessor_cls.return_value.run.return_value = _assessment("LOW")
+        res = runner.invoke(
+            main, [*ASSESS_ARGS, "--output-dir", str(tmp_path), "--username", "reader", "--password", DUMMY_PW]
+        )
+    assert res.exit_code == 0, res.output
+    assert assessor_cls.call_args.kwargs["source_auth"] == ClusterAuth(username="reader", password=DUMMY_PW)
+
+
+@pytest.mark.parametrize("given", [("--source-username", "reader"), ("--source-password", DUMMY_PW)])
+def test_user_without_password_or_the_reverse_fails_clearly(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, given: tuple[str, str]
+) -> None:
+    monkeypatch.delenv("DSE_USERNAME", raising=False)
+    monkeypatch.delenv("DSE_PASSWORD", raising=False)
+    with patch("dse_jg_migrator.assessor.Assessor") as assessor_cls:
+        res = runner.invoke(main, [*ASSESS_ARGS, "--output-dir", str(tmp_path), *given])
+    assert res.exit_code == 1
+    assert "DSE_USERNAME" in " ".join(res.output.split())
+    assessor_cls.assert_not_called()
+
+
+def test_migrate_reads_a_real_cluster_on_the_standard_cql_port(runner: CliRunner, tmp_path: Path) -> None:
+    """migrate defaulted --source-cql-port to 9043 (the local stack's port) while every other command used 9042."""
+    (option,) = [p for p in main.commands["migrate"].params if p.name == "source_cql_port"]
+    assert option.default == 9042
+
+
+def test_source_ca_cert_must_exist(runner: CliRunner, tmp_path: Path) -> None:
+    res = runner.invoke(main, [*ASSESS_ARGS, "--source-ca-cert", str(tmp_path / "missing.pem")])
+    assert res.exit_code == 2
+    assert "does not exist" in res.output
 
 
 # ---------------------------------------------------------------------------
@@ -488,3 +545,24 @@ def test_report_without_output_dir_writes_into_out(tmp_path: Path, monkeypatch: 
     assert res.exit_code == 0, res.output
     assert (tmp_path / "out" / "food-migration-report.md").exists()
     assert not (tmp_path / "food-migration-report.md").exists()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "Gremlin server requires authentication credentials in DriverRemoteConnection.",
+        "401: Failed to login. Please re-try.",
+        "AuthenticationFailed('Remote end requires authentication')",
+    ],
+)
+def test_authentication_failure_hints_at_credentials_not_the_stack(runner: CliRunner, error: str) -> None:
+    """Live finding (DSE with authentication): the hint said "Is the stack running?" for a missing password."""
+    with patch("dse_jg_migrator.analyser.Analyser") as analyser_cls:
+        analyser_cls.return_value.run.side_effect = ConnectionError(f"ws://dse:8182/gremlin failed ({error})")
+        res = runner.invoke(
+            main, ["analyse", "--source-gremlin-url", GREMLIN, "--source-cql-host", "dse", "--graph-name", "food"]
+        )
+    out = " ".join(res.output.split())
+    assert res.exit_code == 1
+    assert "DSE_USERNAME / DSE_PASSWORD" in out
+    assert "Is the stack running" not in out

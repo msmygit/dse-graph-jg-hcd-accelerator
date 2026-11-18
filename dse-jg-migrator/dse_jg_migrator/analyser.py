@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from datetime import UTC, datetime
 from typing import Any
 
+from dse_jg_migrator.cql_io import open_cql_cluster
 from dse_jg_migrator.gremlin_io import quiet_gremlin_errors
 from dse_jg_migrator.models import (
     AnalysisResult,
+    ClusterAuth,
     ClusteringKey,
     EdgeLabelDefinition,
     GraphConfig,
@@ -23,6 +26,8 @@ from dse_jg_migrator.models import (
     UserFacingError,
     VertexLabelDefinition,
 )
+
+logger = logging.getLogger(__name__)
 
 # Each top-level DSL statement starts with one of these; splitting on them keeps a vertex-label block
 # from absorbing the edge-label lines that follow it in `schema.describe()` output.
@@ -72,16 +77,14 @@ class Analyser:
         cql_host: str,
         cql_port: int = 9042,
         graph_name: str = "",
-        username: str | None = None,
-        password: str | None = None,
+        source_auth: ClusterAuth | None = None,
         output_dir: str = ".",
     ) -> None:
         self.gremlin_url = gremlin_url
         self.cql_host = cql_host
         self.cql_port = cql_port
         self.graph_name = graph_name
-        self._username = username
-        self._password = password
+        self.source_auth = source_auth or ClusterAuth()
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
@@ -123,13 +126,7 @@ class Analyser:
         """Submit a read-only Gremlin script to the source DSE cluster."""
         from dse_jg_migrator.gremlin_io import open_gremlin_client
 
-        kwargs: dict[str, Any] = {}
-        if self._username:
-            kwargs["username"] = self._username
-        if self._password:
-            kwargs["password"] = self._password
-
-        c = open_gremlin_client(self.gremlin_url, f"{self.graph_name}.g", **kwargs)
+        c = open_gremlin_client(self.gremlin_url, f"{self.graph_name}.g", **self.source_auth.gremlin_kwargs())
         try:
             return c.submit(script, bindings or {}).all().result()
         finally:
@@ -516,10 +513,8 @@ class Analyser:
 
         Also records each edge label's CQL ``table_name`` for the migrator.
         """
+        cluster = open_cql_cluster(self.cql_host, self.cql_port, **self.source_auth.cql_kwargs())
         try:
-            from cassandra.cluster import Cluster
-
-            cluster = Cluster([self.cql_host], port=self.cql_port)
             session = cluster.connect()
             keyspace = self.graph_name
 
@@ -546,9 +541,18 @@ class Analyser:
                 except Exception:  # noqa: BLE001, S110
                     pass
 
-            cluster.shutdown()
-        except Exception:  # noqa: BLE001, S110
+        except Exception as exc:  # noqa: BLE001  # counts are still available over Gremlin; say why CQL was not used
+            logger.warning(
+                "CQL connect to %s:%s for graph '%s' failed (%s); counting over Gremlin instead. "
+                "Check --source-cql-host/--source-cql-port, --source-username/--source-password and --source-cql-ssl.",
+                self.cql_host,
+                self.cql_port,
+                self.graph_name,
+                exc,
+            )
             self._enrich_counts_from_gremlin(result)
+        finally:
+            cluster.shutdown()
 
     # ──────────────────────────────────────────────────────────────────────────
     # JSON output

@@ -13,6 +13,8 @@ secrets/
 dse-jg-migrator/*.properties
 docker/*.properties.local
 
+**.DS_Store
+
 # local scratch: live-cluster probe scripts and captured output (not part of the AGENTS.md section 3 structure)
 .scratch/
 
