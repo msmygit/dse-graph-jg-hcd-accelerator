@@ -14,14 +14,14 @@ def _write(path: Path, content: str) -> None:
 
 
 def _report(tmp_path: Path) -> str:
-    out = Reporter(graph_name="food", output_dir=str(tmp_path)).generate({"migration": {"ok": False, "duration": "3s"}})
+    out = Reporter(graph_name="food", output_dir=str(tmp_path)).generate({"migration": "3s"})
     return Path(out).read_text(encoding="utf-8")
 
 
 def test_generate_minimal(tmp_path: Path) -> None:
     content = _report(tmp_path)
     assert "# Migration Report: food" in content
-    assert "| Migration | ❌ FAIL | 3s |" in content
+    assert "| Migration | — not run | 3s |" in content  # status from the files, duration from the pipeline
     assert "RLAC" not in content
 
 
@@ -132,3 +132,15 @@ def test_phase_status_shows_failures_and_phases_not_run(tmp_path: Path) -> None:
 def test_assessment_without_red_findings_shows_its_risk(tmp_path: Path) -> None:
     _write(tmp_path / "food-assessment-report.json", json.dumps({"overall_risk": "LOW", "findings": []}))
     assert "| Assessment | ✅ LOW risk |" in _file_report(tmp_path)
+
+
+def test_durations_add_a_column_but_never_override_the_status_from_files(tmp_path: Path) -> None:
+    """Passing stats once replaced the file-derived status with "✅ OK unless told otherwise"."""
+    _write(tmp_path / "food-validation-report.md", "**Overall:** ❌ FAIL\n")
+    durations = {"validation": "5.0s", "migration": "1m 12s", "total": "1m 40s"}
+    out = Reporter(graph_name="food", output_dir=str(tmp_path)).generate(durations)
+    content = Path(out).read_text(encoding="utf-8")
+    assert "| Phase | Status | Duration |" in content
+    assert "| Validation | ❌ FAIL | 5.0s |" in content
+    assert "| Analysis | — not run | — |" in content
+    assert "Total pipeline time: 1m 40s" in content
