@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from dse_jg_migrator.analyser import Analyser
 
 FOOD_SCHEMA_DSL = """
@@ -324,6 +326,40 @@ def test_enrich_counts_from_cql_sets_edge_table_names() -> None:
         _make_analyser()._enrich_counts_from_cql(result)
     assert result.edge_labels[0].table_name == "person__knows__person"
     assert result.edge_labels[0].count == 7
+
+
+def test_cql_counts_send_the_source_credentials_and_tls() -> None:
+    from unittest.mock import MagicMock
+
+    from dse_jg_migrator.models import AnalysisResult, ClusterAuth
+
+    auth = ClusterAuth(username="reader", password="pw", cql_ssl=True)  # noqa: S106 — test value
+    cluster = MagicMock()
+    with patch("cassandra.cluster.Cluster", return_value=cluster) as cls, patch("ssl.create_default_context"):
+        _make_analyser(source_auth=auth)._enrich_counts_from_cql(AnalysisResult("food", "dsg", "t"))
+    assert cls.call_args.kwargs["auth_provider"].username == "reader"
+    assert cls.call_args.kwargs["ssl_options"] == {"server_hostname": "localhost"}
+    cluster.shutdown.assert_called_once()
+
+
+def test_failed_cql_connect_is_reported_then_counted_over_gremlin(caplog: pytest.LogCaptureFixture) -> None:
+    """It fell back silently, hiding wrong credentials or a missing --source-cql-ssl."""
+    from unittest.mock import MagicMock
+
+    from dse_jg_migrator.models import AnalysisResult
+
+    cluster = MagicMock()
+    cluster.connect.side_effect = RuntimeError("Remote end requires authentication")
+    analyser = _make_analyser()
+    with (
+        patch("cassandra.cluster.Cluster", return_value=cluster),
+        patch.object(analyser, "_enrich_counts_from_gremlin") as gremlin_counts,
+        caplog.at_level("WARNING", logger="dse_jg_migrator.analyser"),
+    ):
+        analyser._enrich_counts_from_cql(AnalysisResult("food", "dsg", "t"))
+    gremlin_counts.assert_called_once()
+    assert "localhost:9043" in caplog.text and "requires authentication" in caplog.text
+    cluster.shutdown.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

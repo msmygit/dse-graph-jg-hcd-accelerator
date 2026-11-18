@@ -13,11 +13,13 @@ from typing import Any
 
 from dse_jg_migrator.analyser import parse_schema, schema_mode_from_describe
 from dse_jg_migrator.compatibility_rules import RULES_BY_ID, Category, Severity
+from dse_jg_migrator.cql_io import open_cql_cluster
 from dse_jg_migrator.gremlin_io import quiet_gremlin_errors
 from dse_jg_migrator.models import (
     AnalysisResult,
     AssessmentFinding,
     AssessmentResult,
+    ClusterAuth,
     IndexDefinition,
     IndexMapping,
 )
@@ -58,8 +60,7 @@ class Assessor:
         target_cql_port: int = 9042,
         target_cql_username: str = "cassandra",
         target_cql_password: str = "",
-        username: str | None = None,
-        password: str | None = None,
+        source_auth: ClusterAuth | None = None,
     ) -> None:
         self.gremlin_url = gremlin_url
         self.cql_host = cql_host
@@ -69,8 +70,7 @@ class Assessor:
         self.target_cql_port = target_cql_port
         self.target_cql_username = target_cql_username
         self.target_cql_password = target_cql_password
-        self._username = username
-        self._password = password
+        self.source_auth = source_auth or ClusterAuth()
         self._raw_schema: str = ""
         self._source_error: str = ""  # why the source schema could not be read (reported as CF-006)
         self._engine: str = "dsg"
@@ -124,12 +124,7 @@ class Assessor:
         """
         from dse_jg_migrator.gremlin_io import open_gremlin_client
 
-        kwargs: dict[str, Any] = {}
-        if self._username and self._password:
-            kwargs["username"] = self._username
-            kwargs["password"] = self._password
-
-        c = open_gremlin_client(self.gremlin_url, f"{self.graph_name}.g", **kwargs)
+        c = open_gremlin_client(self.gremlin_url, f"{self.graph_name}.g", **self.source_auth.gremlin_kwargs())
         try:
             result_set = c.submit(script, bindings or {})
             return result_set.all().result()
@@ -572,17 +567,11 @@ class Assessor:
         """
         findings: list[AssessmentFinding] = []
         try:
-            from cassandra.auth import PlainTextAuthProvider
-            from cassandra.cluster import Cluster
-
-            auth = PlainTextAuthProvider(
+            cluster = open_cql_cluster(
+                self.target_cql_host or "",  # only called when a target host is set
+                self.target_cql_port,
                 username=self.target_cql_username,
                 password=self.target_cql_password,
-            )
-            cluster = Cluster(
-                [self.target_cql_host],
-                port=self.target_cql_port,
-                auth_provider=auth,
                 connect_timeout=10,
             )
             session = cluster.connect()
@@ -648,10 +637,10 @@ class Assessor:
         Rules: HC-001 (anonymous rejected, or the probe was inconclusive) or HC-009 (anonymous accepted).
         """
         from cassandra import AuthenticationFailed
-        from cassandra.cluster import Cluster, NoHostAvailable
+        from cassandra.cluster import NoHostAvailable
 
         target = f"{self.target_cql_host}:{self.target_cql_port}"
-        cluster = Cluster([self.target_cql_host], port=self.target_cql_port, connect_timeout=10)
+        cluster = open_cql_cluster(self.target_cql_host or "", self.target_cql_port, connect_timeout=10)  # anonymous
         try:
             cluster.connect()
         except NoHostAvailable as exc:

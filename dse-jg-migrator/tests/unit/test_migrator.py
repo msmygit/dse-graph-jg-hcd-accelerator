@@ -1233,3 +1233,39 @@ def test_missing_cql_edge_table_is_recorded_not_raised(tmp_path) -> None:  # typ
     assert "food.person__knows__person" in m._errors[0] and "KeyError" in m._errors[0]
     assert m._failed == {("edge", "knows"): 1}
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Source credentials and TLS (live finding: never sent, so a secured DSE could not be read)
+# ---------------------------------------------------------------------------
+
+_SOURCE_PW = "pw"  # a test value, not a credential  # pragma: allowlist secret
+
+
+def test_source_cql_reads_send_the_source_credentials(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from unittest.mock import patch
+
+    from dse_jg_migrator.models import ClusterAuth
+
+    auth = ClusterAuth(username="reader", password=_SOURCE_PW)
+    m = _make_migrator(tmp_path, source_cql_host="dse1", source_auth=auth)
+    conn = m._init_checkpoint(str(tmp_path / "ckpt.db"))
+    with patch("cassandra.cluster.Cluster", return_value=_fake_cql([])) as cls:
+        m._migrate_vertices_cql("person", conn, MagicMock())
+    conn.close()
+    assert cls.call_args.args == (["dse1"],)
+    provider = cls.call_args.kwargs["auth_provider"]
+    assert (provider.username, provider.password) == ("reader", _SOURCE_PW)
+
+
+def test_source_gremlin_client_sends_the_source_credentials(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from unittest.mock import patch
+
+    from dse_jg_migrator.models import ClusterAuth
+
+    m = _make_migrator(tmp_path, source_auth=ClusterAuth(username="reader", password=_SOURCE_PW))
+    with patch("dse_jg_migrator.gremlin_io.open_gremlin_client") as open_client:
+        m._make_gremlin_client(m.source_gremlin_url)
+    kwargs = open_client.call_args.kwargs
+    assert (kwargs["username"], kwargs["password"]) == ("reader", _SOURCE_PW)
+    assert "message_serializer" in kwargs  # still GraphSON v3 for the source

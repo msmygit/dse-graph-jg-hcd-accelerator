@@ -194,3 +194,17 @@ missed edges, partial batches and small labels, while the validation table below
 - Audit at the single choke point (the batch flush), not at one of several call sites.
 - An append-only log needs a lifetime: here it lives as long as the checkpoint (fresh checkpoint → fresh log).
 - Cross-check a new report against an independent source (the validation counts) on a live run.
+
+## 13. A parameter that is accepted is not a parameter that is used — follow it to the socket
+
+The migrator took `source_cql_username` / `source_cql_password` since ST-5 and never passed them to
+`Cluster(...)`; `migrate` and `validate` had no source credential options at all; the analyser's CQL connect had no
+credentials and fell back to Gremlin without a word. The local stack has authentication off on DSE, so every live
+run passed. Rules that follow:
+
+- Open every connection of a kind in one place (`gremlin_io`, `cql_io`) and pass one credentials object
+  (`ClusterAuth`) — a new caller cannot forget a field.
+- Test that the credentials reach the driver call (`Cluster(auth_provider=…)`, `Client(username=…)`), not only that
+  the constructor accepts them.
+- Verify live against the secured configuration production uses, not only the open dev default.
+- A fallback (CQL → Gremlin) must say why it fell back; otherwise it hides wrong credentials.

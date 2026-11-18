@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
-from dse_jg_migrator.models import AnalysisResult
+from dse_jg_migrator.models import AnalysisResult, ClusterAuth
+
+logger = logging.getLogger(__name__)
 
 
 class Validator:
@@ -20,8 +23,7 @@ class Validator:
         analysis: AnalysisResult,
         source_gremlin_url: str,
         target_gremlin_url: str,
-        source_username: str | None = None,
-        source_password: str | None = None,
+        source_auth: ClusterAuth | None = None,
         target_username: str | None = None,
         target_password: str | None = None,
         validation_queries_path: str | None = None,
@@ -30,10 +32,8 @@ class Validator:
         self.analysis = analysis
         self.source_gremlin_url = source_gremlin_url
         self.target_gremlin_url = target_gremlin_url
-        self.source_username = source_username
-        self.source_password = source_password
-        self.target_username = target_username
-        self.target_password = target_password
+        self.source_auth = source_auth or ClusterAuth()
+        self.target_auth = ClusterAuth(username=target_username, password=target_password)
         self.validation_queries_path = validation_queries_path
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
@@ -67,8 +67,8 @@ class Validator:
 
     def _count_result(self, kind: str, label: str) -> dict[str, Any]:
         """Count one label on both sides. A failed count (-1) never matches — two failures are not a match."""
-        src = self._get_count(self.source_gremlin_url, label, kind, self.source_username, self.source_password)
-        tgt = self._get_count(self.target_gremlin_url, label, kind, self.target_username, self.target_password)
+        src = self._get_count(self.source_gremlin_url, label, kind, self.source_auth)
+        tgt = self._get_count(self.target_gremlin_url, label, kind, self.target_auth)
         return {"type": kind, "label": label, "source": src, "target": tgt, "match": src == tgt and src >= 0}
 
     def _get_count(
@@ -76,8 +76,7 @@ class Validator:
         url: str,
         label: str,
         element_type: str,
-        username: str | None,
-        password: str | None,
+        auth: ClusterAuth,
     ) -> int:
         """Get vertex or edge count for a label from a Gremlin endpoint."""
         if element_type == "vertex":
@@ -85,9 +84,10 @@ class Validator:
         else:
             script = "g.E().hasLabel(lbl).count()"
         try:
-            result = self._submit(url, script, {"lbl": label}, username, password)
+            result = self._submit(url, script, {"lbl": label}, auth)
             return int(result[0]) if result else 0
-        except Exception:  # noqa: BLE001, S110
+        except Exception as exc:  # noqa: BLE001  # reported as a failed count (-1), never as a match
+            logger.warning("Counting %s label '%s' on %s failed: %s", element_type, label, url, exc)
             return -1
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -108,12 +108,8 @@ class Validator:
 
         for query in lines:
             try:
-                src_result = self._submit(
-                    self.source_gremlin_url, query, {}, self.source_username, self.source_password
-                )
-                tgt_result = self._submit(
-                    self.target_gremlin_url, query, {}, self.target_username, self.target_password
-                )
+                src_result = self._submit(self.source_gremlin_url, query, {}, self.source_auth)
+                tgt_result = self._submit(self.target_gremlin_url, query, {}, self.target_auth)
                 match = str(src_result) == str(tgt_result)
                 results.append(
                     {
@@ -181,17 +177,12 @@ class Validator:
         url: str,
         script: str,
         bindings: dict[str, Any],
-        username: str | None,
-        password: str | None,
+        auth: ClusterAuth,
     ) -> Any:  # noqa: ANN401
-        """Submit a Gremlin script to the given URL and return all results."""
+        """Submit a Gremlin script to the given URL with ``auth``'s credentials and CA, and return all results."""
         from dse_jg_migrator.gremlin_io import open_gremlin_client
 
-        kwargs: dict[str, Any] = {}
-        if username:
-            kwargs["username"] = username
-        if password:
-            kwargs["password"] = password
+        kwargs = auth.gremlin_kwargs()
 
         # DSE requires the "<graph>.g" traversal source; JanusGraph (target) uses plain "g".
         source = f"{self.analysis.graph_name}.g" if url == self.source_gremlin_url else "g"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from unittest.mock import ANY, patch
 
-from dse_jg_migrator.models import AnalysisResult, EdgeLabelDefinition, VertexLabelDefinition
+from dse_jg_migrator.models import AnalysisResult, ClusterAuth, EdgeLabelDefinition, VertexLabelDefinition
 from dse_jg_migrator.validator import Validator
 
 
@@ -36,7 +36,7 @@ def _make_validator(tmp_path, **kwargs) -> Validator:  # type: ignore[no-untyped
 def test_validate_counts_all_match(tmp_path) -> None:  # type: ignore[no-untyped-def]
     v = _make_validator(tmp_path)
 
-    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, auth) -> list:
         label = bindings.get("lbl", "")
         counts = {"person": 100, "recipe": 50, "knows": 200}
         return [counts.get(label, 0)]
@@ -51,7 +51,7 @@ def test_validate_counts_mismatch(tmp_path) -> None:  # type: ignore[no-untyped-
     v = _make_validator(tmp_path)
     call_count = [0]
 
-    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, auth) -> list:
         call_count[0] += 1
         # Source returns 100 for person, target returns 90
         label = bindings.get("lbl", "")
@@ -71,7 +71,7 @@ def test_validate_counts_mismatch(tmp_path) -> None:  # type: ignore[no-untyped-
 def test_validate_counts_gremlin_error_returns_minus_one(tmp_path) -> None:  # type: ignore[no-untyped-def]
     v = _make_validator(tmp_path)
 
-    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, auth) -> list:
         raise RuntimeError("connection refused")
 
     with patch.object(v, "_submit", side_effect=mock_submit):
@@ -89,7 +89,7 @@ def test_validate_counts_gremlin_error_returns_minus_one(tmp_path) -> None:  # t
 def test_run_writes_report_file(tmp_path) -> None:  # type: ignore[no-untyped-def]
     v = _make_validator(tmp_path)
 
-    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, auth) -> list:
         return [100]
 
     with patch.object(v, "_submit", side_effect=mock_submit):
@@ -105,7 +105,7 @@ def test_run_writes_report_file(tmp_path) -> None:  # type: ignore[no-untyped-de
 def test_run_overall_pass_true_when_all_match(tmp_path) -> None:  # type: ignore[no-untyped-def]
     v = _make_validator(tmp_path)
 
-    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, auth) -> list:
         return [100]
 
     with patch.object(v, "_submit", side_effect=mock_submit):
@@ -118,7 +118,7 @@ def test_run_overall_pass_false_on_mismatch(tmp_path) -> None:  # type: ignore[n
     v = _make_validator(tmp_path)
     call_count = [0]
 
-    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, auth) -> list:
         call_count[0] += 1
         return [100 if "8183" in url else 90]
 
@@ -147,7 +147,7 @@ def test_smoke_tests_match_mismatch_and_error(tmp_path) -> None:  # type: ignore
     qfile.write_text("// comment\n\ng.V().count()\ng.E().count()\ng.boom()\n", encoding="utf-8")
     v = _make_validator(tmp_path, validation_queries_path=str(qfile))
 
-    def mock_submit(url: str, script: str, bindings: dict, username, password) -> list:
+    def mock_submit(url: str, script: str, bindings: dict, auth) -> list:
         if "boom" in script:
             raise RuntimeError("bad query")
         if "E()" in script:
@@ -190,7 +190,7 @@ def test_submit_passes_credentials_and_closes_client(tmp_path) -> None:  # type:
             "gremlin_python.driver.client": fake,
         },
     ):
-        assert v._submit("ws://x", "g.V().count()", {}, "u", "p") == [7]
+        assert v._submit("ws://x", "g.V().count()", {}, ClusterAuth(username="u", password="p")) == [7]  # noqa: S106
     fake.Client.assert_called_once_with("ws://x", "g", transport_factory=ANY, username="u", password="p")  # noqa: S106
     fake.Client.return_value.close.assert_called_once()
 
@@ -210,3 +210,18 @@ def test_two_failed_counts_are_not_a_match(tmp_path) -> None:  # type: ignore[no
     assert all(r["source"] == -1 and r["target"] == -1 for r in report["count_results"])
     assert not any(r["match"] for r in report["count_results"])
     assert report["overall_pass"] is False
+
+
+def test_source_and_target_counts_use_their_own_credentials(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    seen: dict[str, ClusterAuth] = {}
+
+    def mock_submit(url: str, script: str, bindings: dict, auth: ClusterAuth) -> list:  # type: ignore[type-arg]
+        seen[url] = auth
+        return [1]
+
+    source = ClusterAuth(username="reader", password="pw")  # noqa: S106 — test value
+    v = _make_validator(tmp_path, source_auth=source, target_username="jg", target_password="jgpw")  # noqa: S106
+    with patch.object(v, "_submit", side_effect=mock_submit):
+        v._validate_counts()
+    assert seen[v.source_gremlin_url] == source
+    assert seen[v.target_gremlin_url].username == "jg"

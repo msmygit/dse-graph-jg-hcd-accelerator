@@ -23,7 +23,8 @@ from typing import Any
 
 from gremlin_python.statics import long as gremlin_long
 
-from dse_jg_migrator.models import AnalysisResult
+from dse_jg_migrator.cql_io import open_cql_cluster
+from dse_jg_migrator.models import AnalysisResult, ClusterAuth
 from dse_jg_migrator.translator import is_tuple_type, resolve_target_class, udt_reference
 
 logger = logging.getLogger(__name__)
@@ -119,9 +120,8 @@ class Migrator:
         source_gremlin_url: str,
         target_gremlin_url: str,
         source_cql_host: str = "",
-        source_cql_port: int = 9043,
-        source_cql_username: str | None = None,
-        source_cql_password: str | None = None,
+        source_cql_port: int = 9042,
+        source_auth: ClusterAuth | None = None,
         target_username: str | None = None,
         target_password: str | None = None,
         cql_fetch_size: int = 1000,
@@ -141,8 +141,7 @@ class Migrator:
         self.target_gremlin_url = target_gremlin_url
         self.source_cql_host = source_cql_host
         self.source_cql_port = source_cql_port
-        self.source_cql_username = source_cql_username
-        self.source_cql_password = source_cql_password
+        self.source_auth = source_auth or ClusterAuth()
         self.target_username = target_username
         self.target_password = target_password
         self.cql_fetch_size = cql_fetch_size
@@ -275,10 +274,9 @@ class Migrator:
         target_client: Any,  # noqa: ANN401
     ) -> int:
         """CQL-direct vertex migration for DSG graphs."""
-        from cassandra.cluster import Cluster
         from cassandra.query import SimpleStatement
 
-        cluster = Cluster([self.source_cql_host], port=self.source_cql_port)
+        cluster = open_cql_cluster(self.source_cql_host, self.source_cql_port, **self.source_auth.cql_kwargs())
         keyspace = self.analysis.graph_name
 
         stmt = SimpleStatement(
@@ -705,14 +703,13 @@ class Migrator:
         target_client: Any,  # noqa: ANN401
     ) -> int:
         """CQL-direct edge migration for DSG graphs."""
-        from cassandra.cluster import Cluster
         from cassandra.query import SimpleStatement
 
         # DSE 6.8 DSG names edge tables <from>__<label>__<to>.
         table_name = el.table_name or f"{el.from_label}__{el.label}__{el.to_label}"
         keyspace = self.analysis.graph_name
 
-        cluster = Cluster([self.source_cql_host], port=self.source_cql_port)
+        cluster = open_cql_cluster(self.source_cql_host, self.source_cql_port, **self.source_auth.cql_kwargs())
         stmt = SimpleStatement(
             f"SELECT * FROM {keyspace}.{table_name}",  # noqa: S608
             fetch_size=self.cql_fetch_size,
@@ -1036,6 +1033,7 @@ class Migrator:
             if self.target_password:
                 kwargs["password"] = self.target_password
         else:
+            kwargs.update(self.source_auth.gremlin_kwargs())
             kwargs["message_serializer"] = serializer.GraphSONSerializersV3d0()
         # DSE requires the "<graph>.g" traversal source; JanusGraph (target) uses plain "g".
         source = "g" if url == self.target_gremlin_url else f"{self.analysis.graph_name}.g"

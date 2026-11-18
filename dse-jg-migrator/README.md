@@ -92,6 +92,70 @@ that stopped. More detail, including Apple Silicon notes: [`docker/README.md`](d
 
 ---
 
+## Connecting to an existing DSE 6.x cluster
+
+The quick start uses the local Docker stack. For your own DSE Graph cluster, point the same commands at its hosts.
+
+```mermaid
+flowchart LR
+    subgraph DSE["Source: DSE 6.x (Graph workload)"]
+        DG["Gremlin :8182<br/>ws:// or wss://"]
+        DC["CQL :9042<br/>optional TLS"]
+    end
+    subgraph Target["Target"]
+        JG["JanusGraph Gremlin :8182"]
+        HCD["HCD CQL :9042"]
+    end
+    T(["dse-jg-migrator"])
+    T -- "assess, analyse, migrate, validate" --> DG
+    T -- "analyse (counts), migrate (Core graphs)" --> DC
+    T -- "init-target, migrate, validate" --> JG
+    T -- "assess --target-cql-host" --> HCD
+```
+
+**What you need**
+
+- Network access from the machine running the tool to a DSE node's Gremlin port (8182) and CQL port (9042), to
+  JanusGraph's Gremlin port, and — for the HCD pre-flight in `assess` — to HCD's CQL port.
+- The graph name (on DSE Core it is also the CQL keyspace).
+- With authentication on: a DSE role that can read the graph — for example `GRANT SELECT ON KEYSPACE <graph> TO
+  migrator_reader;` — plus whatever Gremlin access your cluster's authorization requires.
+
+**Credentials and TLS** (source only; the same four options on `assess`, `analyse`, `migrate`, `validate`, `run-all`)
+
+| Option | Environment | Meaning |
+|---|---|---|
+| `--source-username` (alias `--username`) | `DSE_USERNAME` | DSE user for Gremlin (SASL PLAIN) and CQL (password authentication) |
+| `--source-password` (alias `--password`) | `DSE_PASSWORD` | Its password — prefer the variable: flags show in shell history |
+| `--source-cql-ssl` | — | TLS for CQL (client-to-node encryption) |
+| `--source-ca-cert <pem>` | — | CA that verifies the source's certificates (CQL with `--source-cql-ssl`, and `wss://` Gremlin); without it the system trust store is used |
+
+Set both user and password, or neither. Gremlin uses TLS when its URL is `wss://`.
+
+```bash
+export DSE_USERNAME=migrator_reader
+export DSE_PASSWORD='…'                 # never commit it
+export HCD_CQL_PASSWORD='…'             # only for assess --target-cql-host
+
+SRC="--source-gremlin-url wss://dse-node1:8182/gremlin --source-cql-host dse-node1 --source-cql-port 9042"
+TLS="--source-cql-ssl --source-ca-cert ./dse-ca.pem"   # omit on a cluster without TLS
+
+dse-jg-migrator assess  $SRC $TLS --graph-name mygraph --target-cql-host hcd-node1
+dse-jg-migrator analyse $SRC $TLS --graph-name mygraph
+dse-jg-migrator translate --analysis out/mygraph-analysis.json
+dse-jg-migrator init-target --target-gremlin-url ws://jg-host:8182/gremlin --schema out/mygraph-janusgraph-schema.json
+dse-jg-migrator migrate  --analysis out/mygraph-analysis.json $SRC $TLS --target-gremlin-url ws://jg-host:8182/gremlin
+dse-jg-migrator validate --analysis out/mygraph-analysis.json --source-gremlin-url wss://dse-node1:8182/gremlin \
+  $TLS --target-gremlin-url ws://jg-host:8182/gremlin
+```
+
+(`$SRC` / `$TLS` word-split in bash; in zsh write the options out or use `${=SRC}`.)
+
+**Load on the source.** `migrate` reads each label's table in full and `analyse` runs `count(*)` per table. On a busy
+cluster, point `--source-cql-host` at a node in an analytics or other non-serving datacenter, or at a restored
+snapshot, and run during a quiet period. The assessor and analyser never write; `seed` is for local demo clusters
+only and must not be pointed at production.
+
 ## CLI Reference
 
 Every command that writes files puts them in `./out` (change it with `--output-dir`), and the examples below read the

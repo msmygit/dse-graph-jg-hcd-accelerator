@@ -1083,6 +1083,7 @@ Create the Python project structure, dependency manifest, and development enviro
    │   ├── models.py                 # Dataclasses for schema elements
    │   ├── config.py                 # Configuration dataclasses
    │   ├── gremlin_io.py             # Shared Gremlin client factory (added after ST-9, see ST-1 step 6)
+   │   ├── cql_io.py                 # Shared CQL cluster factory: auth + TLS (ST-1 step 7)
    │   ├── seeder.py                 # NEW (ST-9): Sample workload seeder
    │   └── seed_templates/           # NEW (ST-9): Built-in Gremlin template files
    │       ├── food.groovy
@@ -1101,6 +1102,7 @@ Create the Python project structure, dependency manifest, and development enviro
    │   │   ├── test_validator.py
    │   │   ├── test_seeder.py        # NEW (ST-9)
    │   │   ├── test_gremlin_io.py
+   │   │   ├── test_cql_io.py
    │   │   └── test_models.py
    │   ├── fixtures/
    │   └── e2e/
@@ -1142,6 +1144,16 @@ Create the Python project structure, dependency manifest, and development enviro
    transport closes itself when its connect fails. `quiet_gremlin_errors()` mutes gremlin-python's own ERROR log
    (a full Java stack trace) around requests that fail by design — the OLAP `a.V()` capability probes in
    `assessor.py` and `analyser.py`; all other requests log as before.
+7. **`cql_io.py` and source credentials / TLS (added later, user-approved, branch `fix/source-auth-tls`).** Every CQL
+   connection (source DSE and target HCD) opens through `open_cql_cluster()`, which applies `PlainTextAuthProvider`
+   and a verifying TLS context (hostname checked). `models.ClusterAuth` carries the source user, password (hidden
+   from `repr`), `cql_ssl` and an optional CA and produces the keyword arguments for both `open_gremlin_client()`
+   (SASL PLAIN; the CA reaches aiohttp for `wss://`) and `open_cql_cluster()`. The CLI's `assess`, `analyse`,
+   `migrate`, `validate` and `run-all` share `--source-username`/`--source-password` (env `DSE_USERNAME` /
+   `DSE_PASSWORD`; the old `--username`/`--password` remain aliases), `--source-cql-ssl` and `--source-ca-cert`.
+   Rationale (found reviewing how a user connects to an existing cluster): `migrate` and `validate` had no source
+   credentials, the migrator accepted CQL credentials but never sent them, and the analyser's CQL connection had
+   none and fell back to Gremlin silently — so a cluster with authentication could be assessed but not migrated.
 
 ### Relevant Context
 - No existing Python code in the repo; this is greenfield.
@@ -3299,6 +3311,7 @@ handled in code and covered by a regression unit test; details in `docs/LEARNING
 | Seeder (ST-9) | Templates capped edges at the vertex count and never populated sets/maps/Points/UDTs/tuples/posts | Unique-pair generation honours `--edge-count`; all declared types populated |
 | Environment | DSE 6.8 (Java 8) wedged at a JVM safepoint on every boot under QEMU | E2E source switched to DSE 6.9 (Java 11) — Sub-Task 8, Relevant Context |
 | Semantics | DSE Core `listOf` is one list-valued property; JanusGraph LIST cardinality is separate values (`values('roles')` differs) | Data identical; application queries need adjusting (documented) |
+| Source connections (ST-2/5/6/7) | A DSE cluster with authentication could be assessed but not migrated: `migrate` / `validate` had no source credentials, the migrator never sent the CQL credentials it accepted, the analyser's CQL had none (silent Gremlin fallback), and there was no TLS option; `migrate --source-cql-port` defaulted to the local stack's 9043 | `ClusterAuth` + `cql_io.open_cql_cluster()` + shared `--source-*` options / `DSE_USERNAME`/`DSE_PASSWORD` (ST-1 step 7); the fallback is logged; the port defaults to 9042 (#12) |
 | CLI (ST-7) | Every command defaulted `--output-dir` to `.`, so commands run one by one wrote to the working directory while `run-all` (README: `--output-dir ./out`) wrote to `./out` | One shared `--output-dir` option, default `out`; `migrate` and `report` create it like the other modules (#9) |
 | Assessor (ST-0) | The report never said which DSE indexes need OpenSearch / Elasticsearch; the cluster overview was JSON-only, its schema mode always "Unknown" (a regex used as plain text) and OLAP always off | Index Analysis and Cluster Overview from `parse_schema()` + `Translator.translate()` (#8; Step 0.3) |
 | Semantics | A DSE search key without `asText()`/`asString()` on a Text property is indexed both ways; the translator gives it JanusGraph's default TEXT mapping, so whole-value predicates (`Search.prefix()`, `regex()`) are not served | Flagged in the Index Analysis (set `Mapping.TEXTSTRING`); not yet translated automatically |
