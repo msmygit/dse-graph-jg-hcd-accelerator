@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import itertools
 import json
+import re
+from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -566,3 +569,112 @@ def test_authentication_failure_hints_at_credentials_not_the_stack(runner: CliRu
     assert res.exit_code == 1
     assert "DSE_USERNAME / DSE_PASSWORD" in out
     assert "Is the stack running" not in out
+
+
+# ---------------------------------------------------------------------------
+# Step timing (cli-step-timing plan): every step result line ends with its duration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("seconds", "text"),
+    [
+        (0.0, "0ms"),
+        (0.85, "850ms"),
+        (0.9996, "1.0s"),  # rounds up: never "1000ms"
+        (3.24, "3.2s"),
+        (59.94, "59.9s"),
+        (59.96, "1m 0s"),  # rounds up: never "60.0s"
+        (72.4, "1m 12s"),
+        (3599.6, "1h 0m 0s"),
+        (3783.0, "1h 3m 3s"),
+    ],
+)
+def test_format_duration(seconds: float, text: str) -> None:
+    from dse_jg_migrator.cli import _format_duration
+
+    assert _format_duration(seconds) == text
+
+
+@pytest.fixture
+def fixed_clock() -> Iterator[None]:
+    """Every ``time.perf_counter()`` call in cli.py is 3.2 s after the previous one."""
+    from dse_jg_migrator.cli import console
+
+    with (
+        patch("dse_jg_migrator.cli.time.perf_counter", side_effect=itertools.count(0.0, 3.2)),
+        patch.object(console, "_width", 300),  # long tmp paths must not wrap the suffix onto the next line
+    ):
+        yield
+
+
+def _line(output: str, text: str) -> str:
+    return next(ln for ln in output.splitlines() if text in ln)
+
+
+def test_seed_line_ends_with_its_duration(runner: CliRunner, fixed_clock: None) -> None:
+    with patch("dse_jg_migrator.seeder.Seeder") as seeder_cls:
+        seeder_cls.return_value.run.return_value = SeederResult("food", "food", 1, 1, "n")
+        res = runner.invoke(main, ["seed", "--source-gremlin-url", GREMLIN, "--template", "food", "--confirm"])
+    assert _line(res.output, "seeded successfully").endswith("seeded successfully. [3.2s]")
+
+
+def test_seed_does_not_count_the_confirmation_prompt(runner: CliRunner) -> None:
+    clock = iter([100.0, 104.1])  # the timer starts after the prompt was answered
+    with (
+        patch("dse_jg_migrator.seeder.Seeder") as seeder_cls,
+        patch("dse_jg_migrator.cli.time.perf_counter", side_effect=lambda: next(clock)),
+    ):
+        seeder_cls.return_value.run.return_value = SeederResult("food", "food", 1, 1, "n")
+        res = runner.invoke(main, ["seed", "--source-gremlin-url", GREMLIN, "--template", "food"], input="y\n")
+    assert "[4.1s]" in res.output
+
+
+def test_failed_migration_also_shows_how_long_it_ran(runner: CliRunner, tmp_path: Path, fixed_clock: None) -> None:
+    analysis = _analysis_file(tmp_path)
+    with patch("dse_jg_migrator.migrator.Migrator") as mig_cls:
+        mig_cls.return_value.run.return_value = {"vertices": {"person": 1}, "edges": {}, "errors": ["boom"]}
+        res = runner.invoke(
+            main,
+            ["migrate", "--analysis", str(analysis), "--source-gremlin-url", GREMLIN, "--target-gremlin-url", TARGET],
+        )
+    assert res.exit_code == 1
+    assert _line(res.output, "Migration incomplete").endswith("written [3.2s]")
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_validation_line_has_a_duration_on_pass_and_fail(
+    runner: CliRunner, tmp_path: Path, fixed_clock: None, ok: bool
+) -> None:
+    analysis = _analysis_file(tmp_path)
+    report = {"overall_pass": ok, "count_results": [{"match": ok}], "smoke_results": []}
+    with patch("dse_jg_migrator.validator.Validator") as val_cls:
+        val_cls.return_value.run.return_value = report
+        res = runner.invoke(
+            main,
+            ["validate", "--analysis", str(analysis), "--source-gremlin-url", GREMLIN, "--target-gremlin-url", TARGET],
+        )
+    assert _line(res.output, "count checks passed").endswith("passed [3.2s]")
+
+
+def test_assess_shows_its_duration_once(runner: CliRunner, tmp_path: Path, fixed_clock: None) -> None:
+    with patch("dse_jg_migrator.assessor.Assessor") as assessor_cls:
+        assessor_cls.return_value.run.return_value = _assessment("LOW")
+        res = runner.invoke(main, [*ASSESS_ARGS, "--output-dir", str(tmp_path)])
+    assert res.output.count("[3.2s]") == 1
+    assert _line(res.output, "html").endswith("[3.2s]")
+
+
+def test_run_all_times_every_step_and_records_the_phases_in_the_report(
+    runner: CliRunner, tmp_path: Path, fixed_clock: None
+) -> None:
+    res, _ = _run_full_pipeline(runner, tmp_path)
+    out = res.output  # type: ignore[attr-defined]
+    duration = re.compile(r"\[(\d+ms|\d+\.\ds|\d+m \d+s)\]$")
+    for step in ("html", "Analysis written", "Schema written", "Schema initialised", "Migration complete",
+                 "count checks passed", "Report written", "Migration pipeline complete"):  # fmt: skip
+        assert duration.search(_line(out, step).rstrip()), step
+    report = (tmp_path / "food-migration-report.md").read_text(encoding="utf-8")
+    assert "| Phase | Status | Duration |" in report
+    assert re.search(r"\| Migration \| .+ \| \d+\.\ds \|", report)
+    assert "Total pipeline time:" in report

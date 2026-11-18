@@ -2033,6 +2033,17 @@ Wire all modules into a cohesive `click`-based CLI with clear command names, hel
    > Migration counts are one total per label, summed from the audit log's batch lines (step 9 of Sub-Task 5): every
    > written batch, including failed ones, is audited, and a fresh checkpoint starts a fresh log.
 
+4. **Step timing (added later, user-approved, branch `feat/cli-step-timing`).** Every step's result line ends with
+   its elapsed time, measured from the command's entry (for `seed`, after the confirmation prompt) to that line:
+   `✓ Migration complete: 210 vertices, 500 edges [1m 12s]`. Format: `850ms` below 1 s, `3.2s` below 1 min,
+   `1m 12s`, `1h 5m 3s` — rounded before the unit is chosen (0.9996 s → `1.0s`, 59.96 s → `1m 0s`). Applies to the
+   ✓ lines of `seed`, `assess` (once, on its last report line), `analyse`, `translate`, `init-target`, `migrate`,
+   `report`, to `validate`'s result line on pass and fail, and to `migrate`'s "✗ Migration incomplete" line. `run-all`
+   times each phase, prints the total on its last line, and passes the durations to `report`, so the migration
+   report's Phase Summary gets a Duration column and a total; statuses still come from the output files (passing
+   stats used to replace them with "✅ OK"). Rationale: users asked how long each step, and the migration, took — the
+   console alone loses it after the run. No new dependency; the bracket is escaped for rich markup.
+
 ### Relevant Context
 - `click` and `rich` are both well-established Python CLI libraries with no heavy transitive dependencies.
 

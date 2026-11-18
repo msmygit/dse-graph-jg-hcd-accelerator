@@ -160,6 +160,8 @@ only and must not be pointed at production.
 
 Every command that writes files puts them in `./out` (change it with `--output-dir`), and the examples below read the
 previous step's files from there, so they can be run one after another. `init-target` only reads its `--schema` file.
+Each step's result line ends with how long it took, e.g. `✓ Migration complete: 210 vertices, 500 edges [1m 12s]`;
+`run-all` also prints the total and records every phase's duration in `out/<graph>-migration-report.md`.
 
 ### `seed` — Seed a DSE cluster with a sample workload
 

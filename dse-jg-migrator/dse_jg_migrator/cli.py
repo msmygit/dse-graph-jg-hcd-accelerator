@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -14,6 +15,33 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn
 from dse_jg_migrator.models import ClusterAuth, UserFacingError
 
 console = Console()
+
+
+def _format_duration(seconds: float) -> str:
+    """Compact elapsed time: ``850ms``, ``3.2s``, ``1m 12s``, ``1h 5m 3s``.
+
+    Rounded before the unit is chosen, so 0.9996 s reads ``1.0s`` (not ``1000ms``) and 59.96 s ``1m 0s``.
+    """
+    if round(seconds * 1000) < 1000:
+        return f"{round(seconds * 1000)}ms"
+    if round(seconds, 1) < 60:
+        return f"{round(seconds, 1):.1f}s"
+    minutes, secs = divmod(round(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m {secs}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m {secs}s"
+
+
+def _elapsed(start: float) -> str:
+    """Time since ``start`` (a ``time.perf_counter()`` value), formatted."""
+    return _format_duration(time.perf_counter() - start)
+
+
+def _took(start: float) -> str:
+    """`` [3.2s]`` suffix for a step's result line; the bracket is escaped so rich does not read it as markup."""
+    return f" [dim]\\[{_elapsed(start)}][/dim]"
+
 
 # Shared by translate, migrate and run-all: migrate writes exactly the keys (and value classes) translate created,
 # so both must receive the same values (run-all passes one value of each to both).
@@ -274,6 +302,7 @@ def seed(
         if not click.confirm("Proceed with seeding?"):
             raise SystemExit(0)
 
+    start = time.perf_counter()  # after the prompt: think-time is not counted
     resolved_name = graph_name or template
     from dse_jg_migrator.seeder import Seeder
 
@@ -287,7 +316,7 @@ def seed(
     with console.status(f"Seeding '{resolved_name}' graph using '{template}' template..."):
         result = seeder.run()
 
-    console.print(f"[green]✓[/green] Graph [bold]{result.graph_name}[/bold] seeded successfully.")
+    console.print(f"[green]✓[/green] Graph [bold]{result.graph_name}[/bold] seeded successfully.{_took(start)}")
     requested = f"{result.vertex_count:,} vertices / {result.edge_count:,} edges per primary label"
     if result.total_vertices is not None and result.total_edges is not None:
         console.print(
@@ -401,6 +430,7 @@ def assess(
         --target-cql-host localhost --target-cql-port 9042 \\
         --graph-name food
     """
+    start = time.perf_counter()
     from dse_jg_migrator.assessment_reporter import AssessmentReporter
     from dse_jg_migrator.assessor import Assessor
 
@@ -431,8 +461,9 @@ def assess(
     paths = reporter.write_all()
 
     _print_risk_banner(result.overall_risk, result.summary)
-    for fmt, path in paths.items():
-        console.print(f"  [green]✓[/green] {fmt:8s} → {path}")
+    took = _took(start)  # once, on the last report line
+    for i, (fmt, path) in enumerate(paths.items(), 1):
+        console.print(f"  [green]✓[/green] {fmt:8s} → {path}{took if i == len(paths) else ''}")
 
     if result.overall_risk in ("HIGH", "CRITICAL") and not skip_assessment_gate:
         console.print(
@@ -466,6 +497,7 @@ def analyse(
     source_ca_cert: str | None,
 ) -> None:
     """Analyse DSE Graph cluster and extract schema to JSON."""
+    start = time.perf_counter()
     from dse_jg_migrator.analyser import Analyser
 
     analyser = Analyser(
@@ -481,7 +513,7 @@ def analyse(
         result = analyser.run()
 
     out_file = os.path.join(output_dir, f"{graph_name}-analysis.json")
-    console.print(f"[green]✓[/green] Analysis written → {out_file}")
+    console.print(f"[green]✓[/green] Analysis written → {out_file}{_took(start)}")
     console.print(
         f"  {len(result.vertex_labels)} vertex labels, "
         f"{len(result.edge_labels)} edge labels, "
@@ -514,6 +546,7 @@ def translate(
     output_dir: str,
 ) -> None:
     """Translate DSE Graph schema to JanusGraph JSON schema."""
+    start = time.perf_counter()
     from dse_jg_migrator.translator import Translator
 
     tr = Translator(
@@ -531,7 +564,7 @@ def translate(
         result = tr.run()
 
     schema_file = os.path.join(output_dir, f"{analysis.graph_name}-janusgraph-schema.json")
-    console.print(f"[green]✓[/green] Schema written → {schema_file}")
+    console.print(f"[green]✓[/green] Schema written → {schema_file}{_took(start)}")
     console.print(
         f"  {len(result.propertyKeys)} property keys, "
         f"{len(result.vertexLabels)} vertex labels, "
@@ -578,6 +611,7 @@ def init_target(
     index_timeout_min: int,
 ) -> None:
     """Apply JanusGraph schema to the target HCD/JanusGraph cluster."""
+    start = time.perf_counter()
     from dse_jg_migrator.initialiser import Initialiser
 
     init = Initialiser(
@@ -599,7 +633,7 @@ def init_target(
         for err in result["errors"]:
             console.print(f"  [red]✗[/red] {err}")
         raise SystemExit(1)
-    console.print("[green]✓[/green] Schema initialised successfully.")
+    console.print(f"[green]✓[/green] Schema initialised successfully.{_took(start)}")
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +685,7 @@ def migrate(
     Exits non-zero if any batch still failed after retries; re-running resumes and retries only the elements
     that are not yet migrated.
     """
+    start = time.perf_counter()
     from dse_jg_migrator.migrator import Migrator
     from dse_jg_migrator.translator import Translator
 
@@ -694,12 +729,14 @@ def migrate(
     for label, count in stats.get("missing_endpoints", {}).items():
         console.print(f"[yellow]⚠[/yellow] {count:,} '{label}' edge(s) skipped: endpoint vertex not migrated")
     if stats.get("errors"):
-        console.print(f"[red]✗[/red] Migration incomplete: {total_v:,} vertices, {total_e:,} edges written")
+        console.print(
+            f"[red]✗[/red] Migration incomplete: {total_v:,} vertices, {total_e:,} edges written{_took(start)}"
+        )
         for err in stats["errors"]:
             console.print(f"  [red]✗[/red] {err}")
         console.print("  Re-run migrate to retry; already-migrated elements are skipped.")
         raise SystemExit(1)
-    console.print(f"[green]✓[/green] Migration complete: {total_v:,} vertices, {total_e:,} edges")
+    console.print(f"[green]✓[/green] Migration complete: {total_v:,} vertices, {total_e:,} edges{_took(start)}")
 
 
 # ---------------------------------------------------------------------------
@@ -726,6 +763,7 @@ def validate(
     source_ca_cert: str | None,
 ) -> None:
     """Compare source and target vertex/edge counts and run smoke tests."""
+    start = time.perf_counter()
     from dse_jg_migrator.translator import Translator
     from dse_jg_migrator.validator import Validator
 
@@ -748,7 +786,7 @@ def validate(
     passes = sum(1 for r in report["count_results"] if r["match"])
     total = len(report["count_results"])
     status_icon = "[green]✓[/green]" if report["overall_pass"] else "[red]✗[/red]"
-    console.print(f"{status_icon} Validation: {passes}/{total} count checks passed")
+    console.print(f"{status_icon} Validation: {passes}/{total} count checks passed{_took(start)}")
     if report.get("reason"):
         console.print(f"  [red]✗[/red] {report['reason']}")
     if not report["overall_pass"]:
@@ -763,13 +801,17 @@ def validate(
 @main.command()
 @click.option("--graph-name", required=True)
 @_output_dir_option
-def report(graph_name: str, output_dir: str) -> None:
-    """Generate the final migration summary report."""
+def report(graph_name: str, output_dir: str, durations: dict[str, str] | None = None) -> None:
+    """Generate the final migration summary report.
+
+    ``durations`` is not a CLI option: ``run-all`` passes its per-phase times so the report records them.
+    """
+    start = time.perf_counter()
     from dse_jg_migrator.reporter import Reporter
 
     r = Reporter(graph_name=graph_name, output_dir=output_dir)
-    path = r.generate()
-    console.print(f"[green]✓[/green] Report written → {path}")
+    path = r.generate(durations)
+    console.print(f"[green]✓[/green] Report written → {path}{_took(start)}")
 
 
 # ---------------------------------------------------------------------------
@@ -847,6 +889,8 @@ def run_all(  # noqa: PLR0913
 
       dse-jg-migrator run-all --seed --template food --analyze-only ...
     """
+    start = time.perf_counter()
+    durations: dict[str, str] = {}  # per phase, recorded in the migration report
     target_cql_password = _require_target_password(target_cql_host, target_cql_password)  # fail before seeding
     _source_auth(source_username, source_password, source_cql_ssl, source_ca_cert)  # likewise
     os.makedirs(output_dir, exist_ok=True)
@@ -866,6 +910,7 @@ def run_all(  # noqa: PLR0913
         )
 
     # 0b. Assess
+    phase_start = time.perf_counter()
     ctx.invoke(
         assess,
         source_gremlin_url=source_gremlin_url,
@@ -886,9 +931,10 @@ def run_all(  # noqa: PLR0913
         source_ca_cert=source_ca_cert,
         skip_assessment_gate=skip_assessment_gate,
     )
+    durations["assessment"] = _elapsed(phase_start)
 
     if analyze_only:
-        console.print("[bold]--analyze-only:[/bold] Stopping after assessment.")
+        console.print(f"[bold]--analyze-only:[/bold] Stopping after assessment.{_took(start)}")
         return
 
     # Check assessment gate
@@ -902,6 +948,7 @@ def run_all(  # noqa: PLR0913
         raise SystemExit(1)
 
     # 1. Analyse
+    phase_start = time.perf_counter()
     ctx.invoke(
         analyse,
         source_gremlin_url=source_gremlin_url,
@@ -914,8 +961,10 @@ def run_all(  # noqa: PLR0913
         source_cql_ssl=source_cql_ssl,
         source_ca_cert=source_ca_cert,
     )
+    durations["analysis"] = _elapsed(phase_start)
 
     # 2. Translate
+    phase_start = time.perf_counter()
     ctx.invoke(
         translate,
         analysis_path=analysis_path,
@@ -924,8 +973,10 @@ def run_all(  # noqa: PLR0913
         decimal_strategy=decimal_strategy,
         output_dir=output_dir,
     )
+    durations["translation"] = _elapsed(phase_start)
 
     # 3. Init target
+    phase_start = time.perf_counter()
     ctx.invoke(
         init_target,
         target_gremlin_url=target_gremlin_url,
@@ -935,8 +986,10 @@ def run_all(  # noqa: PLR0913
         password=None,
         index_timeout_min=30,
     )
+    durations["init_target"] = _elapsed(phase_start)
 
     # 4. Migrate
+    phase_start = time.perf_counter()
     ctx.invoke(
         migrate,
         analysis_path=analysis_path,
@@ -957,8 +1010,10 @@ def run_all(  # noqa: PLR0913
         decimal_strategy=decimal_strategy,
         output_dir=output_dir,
     )
+    durations["migration"] = _elapsed(phase_start)
 
     # 5. Validate
+    phase_start = time.perf_counter()
     ctx.invoke(
         validate,
         analysis_path=analysis_path,
@@ -971,7 +1026,9 @@ def run_all(  # noqa: PLR0913
         source_cql_ssl=source_cql_ssl,
         source_ca_cert=source_ca_cert,
     )
+    durations["validation"] = _elapsed(phase_start)
 
     # 6. Report
-    ctx.invoke(report, graph_name=graph_name, output_dir=output_dir)
-    console.print(f"\n[bold green]✓ Migration pipeline complete for graph '{graph_name}'.[/bold green]")
+    durations["total"] = _elapsed(start)  # up to the report, which records it
+    ctx.invoke(report, graph_name=graph_name, output_dir=output_dir, durations=durations)
+    console.print(f"\n[bold green]✓ Migration pipeline complete for graph '{graph_name}'.[/bold green]{_took(start)}")

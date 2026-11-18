@@ -23,11 +23,13 @@ class Reporter:
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
-    def generate(self, phase_stats: dict[str, Any] | None = None) -> str:
+    def generate(self, durations: dict[str, str] | None = None) -> str:
         """Generate the final migration report.
 
         Args:
-            phase_stats: Optional dict with per-phase timing/count stats from the pipeline.
+            durations: Optional elapsed time per phase, keyed ``assessment``, ``analysis``, ``translation``,
+                ``init_target``, ``migration``, ``validation`` (``run-all`` passes them). They add a Duration
+                column; each phase's status always comes from its output files.
 
         Returns:
             Path to the generated report file.
@@ -40,18 +42,18 @@ class Reporter:
         audit_path = os.path.join(self.output_dir, f"{self.graph_name}-migration-audit.jsonl")
         audit = self._load_audit(audit_path)
 
-        # Phase summary — from the pipeline's stats when given, otherwise from each phase's output files.
         phases = ["Assessment", "Analysis", "Translation", "Init Target", "Migration", "Validation"]
+        statuses = self._phase_statuses(audit)
         lines += ["## Phase Summary", ""]
-        if phase_stats:
+        if durations:
             lines += ["| Phase | Status | Duration |", "|-------|--------|----------|"]
-            for phase in phases:
-                stats = phase_stats.get(phase.lower().replace(" ", "_"), {})
-                status = "✅ OK" if stats.get("ok", True) else "❌ FAIL"
-                lines.append(f"| {phase} | {status} | {stats.get('duration', '—')} |")
+            for phase, status in zip(phases, statuses, strict=True):
+                lines.append(f"| {phase} | {status} | {durations.get(phase.lower().replace(' ', '_'), '—')} |")
+            if "total" in durations:
+                lines += ["", f"Total pipeline time: {durations['total']}"]
         else:
             lines += ["| Phase | Status |", "|-------|--------|"]
-            for phase, status in zip(phases, self._phase_statuses(audit), strict=True):
+            for phase, status in zip(phases, statuses, strict=True):
                 lines.append(f"| {phase} | {status} |")
 
         # Migration counts — the audit log has one entry per written batch; the table shows one total per label.
